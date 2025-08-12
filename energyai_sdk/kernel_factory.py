@@ -16,11 +16,10 @@ import logging
 from typing import Any, Dict, List, Optional
 
 try:
-    import semantic_kernel as sk
-    from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
-    from semantic_kernel.connectors.openapi_plugin.authentication.api_key_authentication_provider import (
-        ApiKeyAuthenticationProvider,
-    )
+    from semantic_kernel import Kernel
+    from semantic_kernel.connectors.ai.azure_ai_inference import AzureAIInferenceChatCompletion
+    from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion
+    from semantic_kernel.functions.kernel_function_from_openapi import kernel_function_from_openapi
 
     SEMANTIC_KERNEL_AVAILABLE = True
 except ImportError:
@@ -65,11 +64,13 @@ class KernelFactory:
         self.config_manager = config_manager or ConfigurationManager()
 
         # Cache for built kernels to avoid rebuilding
-        self._kernel_cache: Dict[str, sk.Kernel] = {}
+        self._kernel_cache: Dict[str, "Kernel"] = {}
+        # Cache for built tools to avoid rebuilding
+        self._tool_cache: Dict[str, Any] = {}
 
     async def create_kernel_for_agent(
         self, agent_name: str, force_rebuild: bool = False
-    ) -> sk.Kernel:
+    ) -> Optional["Kernel"]:
         """
         Create a configured Semantic Kernel instance for the specified agent.
 
@@ -99,7 +100,7 @@ class KernelFactory:
                 raise EnergyAISDKError(f"Agent '{agent_name}' not found in registry")
 
             # Step 2: Create base kernel with LLM service
-            kernel = sk.Kernel()
+            kernel = Kernel()
             await self._add_llm_service(kernel, agent_def)
 
             # Step 3: Load and register tools as plugins
@@ -115,7 +116,7 @@ class KernelFactory:
             self.logger.error(f"Failed to create kernel for agent {agent_name}: {e}")
             raise EnergyAISDKError(f"Kernel creation failed: {e}") from e
 
-    async def _add_llm_service(self, kernel: sk.Kernel, agent_def: AgentDefinition) -> None:
+    async def _add_llm_service(self, kernel: "Kernel", agent_def: AgentDefinition) -> None:
         """
         Add the LLM service to the kernel based on agent configuration.
 
@@ -126,18 +127,24 @@ class KernelFactory:
         try:
             model_config = agent_def.model_config
 
-            # Get Azure OpenAI configuration from settings
-            config = self.config_manager.get_config()
+            # Get configuration from settings
+            config = self.config_manager.get_settings()
 
-            # Create Azure Chat Completion service
-            azure_chat_completion = AzureChatCompletion(
-                deployment_name=model_config.get("deployment_name", "gpt-4"),
-                endpoint=config.azure_openai_endpoint,
-                api_key=config.azure_openai_api_key,
-                api_version=config.azure_openai_api_version,
-            )
-
-            kernel.add_service(azure_chat_completion)
+            # Determine model type and configure accordingly
+            deployment_name = model_config.get("deployment_name", "gpt-4")
+            model_type = model_config.get("model_type", "azure_openai")
+            temperature = agent_def.temperature
+            
+            if model_type == "azure_openai":
+                await self._configure_azure_openai(
+                    kernel, deployment_name, temperature, config, agent_def
+                )
+            elif model_type == "openai":
+                await self._configure_openai(
+                    kernel, deployment_name, temperature, config, agent_def
+                )
+            else:
+                self.logger.warning(f"Unknown model type: {model_type}")
 
             self.logger.debug(
                 f"Added LLM service for deployment: {model_config.get('deployment_name', 'gpt-4')}"
@@ -147,7 +154,66 @@ class KernelFactory:
             self.logger.error(f"Failed to add LLM service: {e}")
             raise EnergyAISDKError(f"LLM service configuration failed: {e}") from e
 
-    async def _load_and_register_tools(self, kernel: sk.Kernel, agent_def: AgentDefinition) -> None:
+    async def _configure_azure_openai(
+        self,
+        kernel: "Kernel",
+        deployment_name: str,
+        temperature: float,
+        config: Any,
+        agent_def: AgentDefinition,
+    ):
+        """Configure Azure OpenAI service."""
+        if hasattr(config, "azure_openai_endpoint"):
+            endpoint = config.azure_openai_endpoint
+            api_key = config.azure_openai_api_key
+            api_version = getattr(config, "azure_openai_api_version", "2024-02-01")
+        else:
+            endpoint = config.get("azure_openai_endpoint")
+            api_key = config.get("azure_openai_api_key")
+            api_version = config.get("azure_openai_api_version", "2024-02-01")
+
+        if not endpoint or not api_key:
+            raise EnergyAISDKError("Azure OpenAI configuration missing")
+
+        service = AzureAIInferenceChatCompletion(
+            ai_model_id=deployment_name,
+            api_key=api_key,
+            endpoint=endpoint,
+            api_version=api_version,
+            service_id=f"{agent_def.name}_{deployment_name}",
+        )
+        kernel.add_service(service)
+        self.logger.info(f"Configured Azure OpenAI service: {deployment_name}")
+
+    async def _configure_openai(
+        self,
+        kernel: "Kernel",
+        deployment_name: str,
+        temperature: float,
+        config: Any,
+        agent_def: AgentDefinition,
+    ):
+        """Configure OpenAI service."""
+        if hasattr(config, "openai_api_key"):
+            api_key = config.openai_api_key
+            base_url = getattr(config, "openai_base_url", None)
+        else:
+            api_key = config.get("openai_api_key")
+            base_url = config.get("openai_base_url")
+
+        if not api_key:
+            raise EnergyAISDKError("OpenAI API key missing")
+
+        service = OpenAIChatCompletion(
+            ai_model_id=deployment_name,
+            api_key=api_key,
+            base_url=base_url,
+            service_id=f"{agent_def.name}_{deployment_name}",
+        )
+        kernel.add_service(service)
+        self.logger.info(f"Configured OpenAI service: {deployment_name}")
+
+    async def _load_and_register_tools(self, kernel: "Kernel", agent_def: AgentDefinition) -> None:
         """
         Load tools from registry and register them as plugins in the kernel.
 
@@ -167,7 +233,7 @@ class KernelFactory:
                 # Continue with other tools rather than failing completely
 
     async def _register_tool_as_plugin(
-        self, kernel: sk.Kernel, tool_name: str, version: str = "1.0.0"
+        self, kernel: "Kernel", tool_name: str, version: str = "1.0.0"
     ) -> None:
         """
         Register a single tool as a plugin in the kernel.
@@ -182,61 +248,80 @@ class KernelFactory:
         if not tool_def:
             raise EnergyAISDKError(f"Tool '{tool_name}' version '{version}' not found in registry")
 
-        # Check if this is an HTTP-based tool that can be converted to OpenAPI
-        tool_schema = tool_def.schema
-        if self._is_http_tool(tool_schema):
-            await self._register_http_tool(kernel, tool_def)
-        else:
-            # For non-HTTP tools, we would need different registration logic
-            self.logger.warning(
-                f"Tool {tool_name} is not an HTTP tool, skipping OpenAPI registration"
-            )
-
-    def _is_http_tool(self, tool_schema: Dict[str, Any]) -> bool:
-        """
-        Check if a tool is HTTP-based and can be converted to OpenAPI.
-
-        Args:
-            tool_schema: Tool schema definition
-
-        Returns:
-            True if tool is HTTP-based, False otherwise
-        """
-        # This is a simplified check - in practice you'd have more sophisticated logic
-        return (
-            tool_schema.get("type") == "function"
-            and "endpoint_url" in tool_schema.get("metadata", {})
-        ) or ("openapi" in tool_schema or "http" in tool_schema.get("type", "").lower())
-
-    async def _register_http_tool(self, kernel: sk.Kernel, tool_def: ToolDefinition) -> None:
-        """
-        Register an HTTP-based tool as an OpenAPI plugin.
-
-        Args:
-            kernel: Kernel to add plugin to
-            tool_def: Tool definition to register
-        """
         try:
-            # Convert tool definition to OpenAPI specification
+            # Check cache first
+            cache_key = f"{tool_name}_plugin"
+            if cache_key in self._tool_cache:
+                plugin = self._tool_cache[cache_key]
+                kernel.add_plugin(plugin)
+                self.logger.debug(f"Using cached tool: {tool_name}")
+                return
+
+            # Convert tool schema to OpenAPI and create plugin
             openapi_spec = self._convert_to_openapi(tool_def)
-
-            # Create authentication provider if needed
-            auth_provider = None
-            if tool_def.auth_config:
-                auth_provider = self._create_auth_provider(tool_def.auth_config)
-
-            # Register the plugin with Semantic Kernel
-            await kernel.add_plugin_from_openapi(
-                plugin_name=tool_def.name.lower().replace(" ", "_"),
+            plugin = await kernel_function_from_openapi(
+                plugin_name=tool_def.name,
                 openapi_document=openapi_spec,
-                auth_provider=auth_provider,
+                execution_settings=None,
             )
 
-            self.logger.info(f"Successfully registered HTTP tool: {tool_def.name}")
+            # Cache and add to kernel
+            self._tool_cache[cache_key] = plugin
+            kernel.add_plugin(plugin)
+            
+            self.logger.info(f"Successfully loaded tool: {tool_name}")
 
         except Exception as e:
-            self.logger.error(f"Failed to register HTTP tool {tool_def.name}: {e}")
+            self.logger.error(f"Failed to load tool {tool_name}: {e}")
             raise
+
+
+    def clear_tool_cache(self, tool_name: Optional[str] = None):
+        """Clear tool cache."""
+        if tool_name:
+            cache_key = f"{tool_name}_plugin"
+            if cache_key in self._tool_cache:
+                del self._tool_cache[cache_key]
+                self.logger.info(f"Cleared tool cache for: {tool_name}")
+        else:
+            self._tool_cache.clear()
+            self.logger.info("Cleared all tool cache")
+
+    def get_factory_stats(self) -> Dict[str, Any]:
+        """Get factory statistics."""
+        return {
+            "cached_agents": len(self._kernel_cache),
+            "cached_tools": len(self._tool_cache),
+            "agent_names": list(self._kernel_cache.keys()),
+            "tool_names": list(self._tool_cache.keys()),
+            "registry_available": self.registry_client is not None,
+            "semantic_kernel_available": SEMANTIC_KERNEL_AVAILABLE,
+        }
+
+    async def get_available_agents(self) -> List[str]:
+        """Get list of available agent names from the registry."""
+        if not self.registry_client:
+            return []
+
+        try:
+            agent_defs = await self.registry_client.list_agents()
+            return [agent.name for agent in agent_defs]
+        except Exception as e:
+            self.logger.error(f"Failed to get available agents: {e}")
+            return []
+
+    async def get_available_tools(self) -> List[str]:
+        """Get list of available tool names from the registry."""
+        if not self.registry_client:
+            return []
+
+        try:
+            tool_defs = await self.registry_client.list_tools()
+            return [tool.name for tool in tool_defs]
+        except Exception as e:
+            self.logger.error(f"Failed to get available tools: {e}")
+            return []
+
 
     def _convert_to_openapi(self, tool_def: ToolDefinition) -> str:
         """
@@ -252,243 +337,108 @@ class KernelFactory:
             OpenAPI specification as JSON string
         """
         try:
-            # Extract base information
+            # Extract function details from tool schema
             tool_schema = tool_def.schema
-            endpoint_url = tool_def.endpoint_url or tool_schema.get("metadata", {}).get(
-                "endpoint_url"
-            )
-
-            if not endpoint_url:
-                raise EnergyAISDKError(f"No endpoint URL found for tool: {tool_def.name}")
+            
+            # Handle different schema formats
+            if "function" in tool_schema:
+                # Tool Call format: {"type": "function", "function": {...}}
+                func_def = tool_schema["function"]
+                func_name = func_def.get("name", tool_def.name)
+                description = func_def.get("description", tool_def.description)
+                parameters = func_def.get("parameters", {})
+            else:
+                # Direct schema format
+                func_name = tool_def.name
+                description = tool_def.description
+                parameters = tool_schema
 
             # Build OpenAPI specification
             openapi_spec = {
-                "openapi": "3.0.1",
+                "openapi": "3.0.0",
                 "info": {
                     "title": tool_def.name,
-                    "description": tool_def.description,
+                    "description": description,
                     "version": tool_def.version,
                 },
-                "servers": [
-                    {
-                        "url": endpoint_url,
-                        "description": f"API server for {tool_def.name}",
+                "servers": [],
+                "paths": {
+                    f"/{func_name}": {
+                        "post": {
+                            "operationId": func_name,
+                            "summary": description,
+                            "description": description,
+                            "requestBody": {
+                                "required": True,
+                                "content": {
+                                    "application/json": {
+                                        "schema": parameters
+                                    }
+                                }
+                            },
+                            "responses": {
+                                "200": {
+                                    "description": "Successful operation",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "description": "Tool execution result"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
-                ],
-                "paths": {},
-                "components": {
-                    "schemas": {},
-                    "securitySchemes": {},
-                },
+                }
             }
 
-            # Convert function schema to OpenAPI path
-            if tool_schema.get("type") == "function":
-                self._add_function_to_openapi(openapi_spec, tool_schema["function"], tool_def)
-            else:
-                # Handle other schema types as needed
-                self._add_generic_tool_to_openapi(openapi_spec, tool_schema, tool_def)
+            # Add endpoint URL if available
+            if tool_def.endpoint_url:
+                openapi_spec["servers"] = [{"url": tool_def.endpoint_url}]
 
-            # Add security schemes if authentication is configured
+            # Add authentication if specified
             if tool_def.auth_config:
-                self._add_security_to_openapi(openapi_spec, tool_def.auth_config)
+                auth_config = tool_def.auth_config
+                if auth_config.get("type") == "bearer":
+                    openapi_spec["components"] = {
+                        "securitySchemes": {
+                            "bearerAuth": {
+                                "type": "http",
+                                "scheme": "bearer"
+                            }
+                        }
+                    }
+                    openapi_spec["paths"][f"/{func_name}"]["post"]["security"] = [
+                        {"bearerAuth": []}
+                    ]
+                elif auth_config.get("type") == "api_key":
+                    openapi_spec["components"] = {
+                        "securitySchemes": {
+                            "apiKeyAuth": {
+                                "type": "apiKey",
+                                "in": auth_config.get("in", "header"),
+                                "name": auth_config.get("name", "X-API-Key")
+                            }
+                        }
+                    }
+                    openapi_spec["paths"][f"/{func_name}"]["post"]["security"] = [
+                        {"apiKeyAuth": []}
+                    ]
 
-            return json.dumps(openapi_spec, indent=2)
+            openapi_json = json.dumps(openapi_spec, indent=2)
+            self.logger.debug(f"Generated OpenAPI spec for {tool_def.name}: {len(openapi_json)} chars")
+            
+            return openapi_json
 
         except Exception as e:
             self.logger.error(f"Failed to convert tool {tool_def.name} to OpenAPI: {e}")
             raise EnergyAISDKError(f"OpenAPI conversion failed: {e}") from e
 
-    def _add_function_to_openapi(
-        self,
-        openapi_spec: Dict[str, Any],
-        function_schema: Dict[str, Any],
-        tool_def: ToolDefinition,
-    ) -> None:
-        """
-        Add a function-type tool to the OpenAPI specification.
 
-        Args:
-            openapi_spec: OpenAPI spec to modify
-            function_schema: Function schema from tool definition
-            tool_def: Complete tool definition
-        """
-        function_name = function_schema.get("name", tool_def.name.lower().replace(" ", "_"))
-        parameters = function_schema.get("parameters", {})
 
-        # Create path for the function (assuming POST method)
-        path = f"/{function_name}"
 
-        # Build request body schema from parameters
-        request_schema = {
-            "type": "object",
-            "properties": parameters.get("properties", {}),
-            "required": parameters.get("required", []),
-        }
-
-        # Add the path to OpenAPI spec
-        openapi_spec["paths"][path] = {
-            "post": {
-                "operationId": function_name,
-                "summary": function_schema.get("description", tool_def.description),
-                "description": function_schema.get("description", tool_def.description),
-                "requestBody": {
-                    "required": True,
-                    "content": {"application/json": {"schema": request_schema}},
-                },
-                "responses": {
-                    "200": {
-                        "description": "Successful response",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "type": "object",
-                                    "properties": {
-                                        "result": {"type": "string"},
-                                        "data": {"type": "object"},
-                                    },
-                                }
-                            }
-                        },
-                    },
-                    "400": {"description": "Bad request"},
-                    "500": {"description": "Internal server error"},
-                },
-            }
-        }
-
-        # Add schema to components if it has properties
-        if request_schema.get("properties"):
-            schema_name = f"{function_name.title()}Request"
-            openapi_spec["components"]["schemas"][schema_name] = request_schema
-
-    def _add_generic_tool_to_openapi(
-        self, openapi_spec: Dict[str, Any], tool_schema: Dict[str, Any], tool_def: ToolDefinition
-    ) -> None:
-        """
-        Add a generic tool to the OpenAPI specification.
-
-        Args:
-            openapi_spec: OpenAPI spec to modify
-            tool_schema: Tool schema from definition
-            tool_def: Complete tool definition
-        """
-        # This is a fallback for non-function schemas
-        # You would implement specific logic based on your tool schema format
-        tool_name = tool_def.name.lower().replace(" ", "_")
-        path = f"/{tool_name}"
-
-        openapi_spec["paths"][path] = {
-            "post": {
-                "operationId": tool_name,
-                "summary": tool_def.description,
-                "description": tool_def.description,
-                "requestBody": {
-                    "required": True,
-                    "content": {
-                        "application/json": {
-                            "schema": tool_schema.get("parameters", {"type": "object"})
-                        }
-                    },
-                },
-                "responses": {
-                    "200": {
-                        "description": "Successful response",
-                        "content": {"application/json": {"schema": {"type": "object"}}},
-                    }
-                },
-            }
-        }
-
-    def _add_security_to_openapi(
-        self, openapi_spec: Dict[str, Any], auth_config: Dict[str, Any]
-    ) -> None:
-        """
-        Add security schemes to the OpenAPI specification.
-
-        Args:
-            openapi_spec: OpenAPI spec to modify
-            auth_config: Authentication configuration
-        """
-        auth_type = auth_config.get("type", "").lower()
-
-        if auth_type == "api_key":
-            scheme_name = "ApiKeyAuth"
-            openapi_spec["components"]["securitySchemes"][scheme_name] = {
-                "type": "apiKey",
-                "in": auth_config.get("location", "header"),
-                "name": auth_config.get("key_name", "X-API-Key"),
-            }
-
-            # Apply security to all operations
-            for path_obj in openapi_spec["paths"].values():
-                for method_obj in path_obj.values():
-                    if "security" not in method_obj:
-                        method_obj["security"] = []
-                    method_obj["security"].append({scheme_name: []})
-
-        elif auth_type == "bearer":
-            scheme_name = "BearerAuth"
-            openapi_spec["components"]["securitySchemes"][scheme_name] = {
-                "type": "http",
-                "scheme": "bearer",
-                "bearerFormat": auth_config.get("format", "JWT"),
-            }
-
-            # Apply security to all operations
-            for path_obj in openapi_spec["paths"].values():
-                for method_obj in path_obj.values():
-                    if "security" not in method_obj:
-                        method_obj["security"] = []
-                    method_obj["security"].append({scheme_name: []})
-
-    def _create_auth_provider(self, auth_config: Dict[str, Any]) -> Optional[Any]:
-        """
-        Create an authentication provider based on the auth configuration.
-
-        Args:
-            auth_config: Authentication configuration from tool definition
-
-        Returns:
-            Authentication provider instance or None
-        """
-        auth_type = auth_config.get("type", "").lower()
-
-        if auth_type == "api_key":
-            # Get the API key from configuration or secret reference
-            api_key = None
-
-            if "secret_ref" in auth_config:
-                # Load from secret reference (implement based on your secret management)
-                secret_ref = auth_config["secret_ref"]
-                api_key = self._get_secret_value(secret_ref)
-            elif "value" in auth_config:
-                # Direct value (not recommended for production)
-                api_key = auth_config["value"]
-
-            if api_key and SEMANTIC_KERNEL_AVAILABLE:
-                from semantic_kernel.connectors.openapi_plugin.authentication.api_key_authentication_provider import (
-                    ApiKeyAuthenticationProvider,
-                )
-
-                return ApiKeyAuthenticationProvider(lambda: api_key)
-
-        return None
-
-    def _get_secret_value(self, secret_ref: str) -> Optional[str]:
-        """
-        Retrieve a secret value from the configured secret store.
-
-        Args:
-            secret_ref: Reference to the secret
-
-        Returns:
-            Secret value or None if not found
-        """
-        # This would integrate with your secret management system
-        # For now, return None as a placeholder
-        self.logger.warning(f"Secret reference not implemented: {secret_ref}")
-        return None
 
     def clear_cache(self) -> None:
         """Clear the kernel cache."""
