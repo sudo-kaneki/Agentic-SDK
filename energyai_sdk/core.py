@@ -427,21 +427,34 @@ class KernelManager:
             from .config import ConfigurationManager
             from .kernel_factory import KernelFactory
 
-            # Initialize with real clients - this would be injected in production
+            # Initialize with real clients
             config_manager = ConfigurationManager()
 
-            # For now, we'll use a placeholder for registry_client
-            # In production, this would be properly initialized
+            # Try to initialize registry client with configuration
             registry_client = None
             try:
-                config = config_manager.get_config()
+                config = config_manager.get_settings()
+                # Check if we have Cosmos DB configuration
                 if hasattr(config, "cosmos_endpoint") and hasattr(config, "cosmos_key"):
                     registry_client = RegistryClient(
                         cosmos_endpoint=config.cosmos_endpoint,
                         cosmos_key=config.cosmos_key,
                     )
+                elif isinstance(config, dict) and config.get("cosmos_endpoint") and config.get("cosmos_key"):
+                    registry_client = RegistryClient(
+                        cosmos_endpoint=config["cosmos_endpoint"],
+                        cosmos_key=config["cosmos_key"],
+                    )
+                else:
+                    # Use mock client for development/testing
+                    from .clients.registry_client import MockRegistryClient
+                    registry_client = MockRegistryClient()
+                    self.logger.info("Using MockRegistryClient for development")
             except Exception as e:
                 self.logger.warning(f"Could not initialize registry client: {e}")
+                # Fallback to mock client
+                from .clients.registry_client import MockRegistryClient
+                registry_client = MockRegistryClient()
 
             self._factory = KernelFactory(
                 registry_client=registry_client,
@@ -537,75 +550,6 @@ class KernelManager:
         }
 
 
-# Legacy KernelFactory for backward compatibility
-class KernelFactory:
-    """
-    Legacy KernelFactory for backward compatibility.
-
-    Note: This is deprecated. Use KernelManager instead.
-    """
-
-    @staticmethod
-    def create_kernel() -> Optional["Kernel"]:
-        """Create a new Semantic Kernel instance."""
-        if not SEMANTIC_KERNEL_AVAILABLE:
-            return None
-
-        from semantic_kernel import Kernel
-
-        return Kernel()
-
-    @staticmethod
-    def configure_azure_openai_service(
-        kernel: "Kernel",
-        deployment_name: str,
-        endpoint: str,
-        api_key: str,
-        api_version: str = "2024-02-01",
-        service_id: Optional[str] = None,
-    ):
-        """Configure Azure OpenAI service on kernel."""
-        try:
-            from semantic_kernel.connectors.ai.azure_ai_inference import (
-                AzureAIInferenceChatCompletion,
-            )
-
-            service = AzureAIInferenceChatCompletion(
-                ai_model_id=deployment_name,
-                api_key=api_key,
-                endpoint=endpoint,
-                api_version=api_version,
-                service_id=service_id or deployment_name,
-            )
-
-            kernel.add_service(service)
-        except ImportError:
-            logging.getLogger("energyai_sdk.kernel_factory").error(
-                "Azure AI Inference connector not available"
-            )
-
-    @staticmethod
-    def configure_openai_service(
-        kernel: "Kernel",
-        model_id: str,
-        api_key: str,
-        base_url: Optional[str] = None,
-        service_id: Optional[str] = None,
-    ):
-        """Configure OpenAI service on kernel."""
-        try:
-            from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion
-
-            service = OpenAIChatCompletion(
-                ai_model_id=model_id,
-                api_key=api_key,
-                base_url=base_url,
-                service_id=service_id or model_id,
-            )
-
-            kernel.add_service(service)
-        except ImportError:
-            logging.getLogger("energyai_sdk.kernel_factory").error("OpenAI connector not available")
 
 
 # SDK initialization
