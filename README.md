@@ -1,15 +1,16 @@
 # EnergyAI SDK 🚀
 
-**A Powerful SDK Wrapper for Semantic Kernel - Create AI Agents with Simple Decorators**
+**A Powerful SDK Wrapper for Semantic Kernel with Azure Cloud Integration**
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![Semantic Kernel](https://img.shields.io/badge/semantic--kernel-1.0+-green.svg)](https://github.com/microsoft/semantic-kernel)
+[![Azure Integration](https://img.shields.io/badge/azure-cosmos%20%7C%20monitor-blue.svg)](https://azure.microsoft.com/)
 
 ## 🎯 Mission
 
-Transform complex Semantic Kernel agent creation into simple, declarative Python decorators. Instead of writing 50+ lines of boilerplate code, create powerful AI agents with just a few decorators!
+Transform complex Semantic Kernel agent creation into simple, declarative Python decorators with enterprise-grade Azure integration. Create powerful AI agents with just decorators and scale them with cloud-native architecture!
 
-**🌟 Perfect for:** Energy analytics, multi-agent orchestration, Langfuse/OpenTelemetry integration, and rapid AI prototyping.
+**🌟 Perfect for:** Energy analytics, multi-agent orchestration, Azure cloud deployment, enterprise AI applications, and production-ready AI platforms.
 
 ## ⚡ Quick Start
 
@@ -41,24 +42,31 @@ agents = bootstrap_agents(azure_openai_config={
 })
 ```
 
-## 🏗️ Simplified Architecture
+## 🏗️ Cloud-Native Architecture
 
-**Clean, Decorator-Only Design:**
+**Enterprise-Ready Design with Azure Integration:**
 ```
 energyai_sdk/
-├── core.py          # Registry, Base Classes, Data Models
-├── decorators.py    # @agent, @tool, @skill, @master_agent
-├── agents.py        # Semantic Kernel Integration & bootstrap_agents()
-├── application.py   # FastAPI Integration (optional)
-├── middleware.py    # Request/Response Pipeline (optional)
-├── config.py        # Configuration Management
-└── exceptions.py    # Comprehensive Error Handling
+├── core.py              # Registry, Base Classes, Kernel Factory
+├── decorators.py        # @agent, @tool, @skill, @master_agent
+├── agents.py            # Semantic Kernel Integration & bootstrap_agents()
+├── application.py       # FastAPI Integration with Azure clients
+├── middleware.py        # Request/Response Pipeline
+├── config.py            # Configuration Management
+├── exceptions.py        # Comprehensive Error Handling
+└── clients/             # 🆕 Azure Integration
+    ├── registry_client.py    # Cosmos DB agent/tool registry
+    ├── context_store_client.py  # Session persistence
+    └── monitoring.py         # OpenTelemetry + Azure Monitor
 ```
 
 **✨ Key Benefits:**
 - 🎯 **Decorator-Only**: No builder patterns, no complex APIs
 - 🔧 **70% Code Reduction**: Clean, maintainable, and powerful
-- 📡 **Monitoring Ready**: Built-in Langfuse & OpenTelemetry support
+- ☁️ **Azure Native**: Full Cosmos DB + Azure Monitor integration
+- 📊 **Enterprise Observability**: OpenTelemetry distributed tracing
+- 🔄 **Dynamic Loading**: Runtime agent/tool loading from registry
+- 💾 **Session Persistence**: Stateful conversations across requests
 - 🚀 **Production Ready**: Comprehensive testing & error handling
 
 ## 📦 Installation
@@ -72,8 +80,12 @@ git clone <repository-url>
 cd energyai_sdk_project
 pip install -e .
 
+# Azure integration dependencies
+pip install azure-cosmos azure-monitor-opentelemetry-exporter
+
 # Optional dependencies for web platform
 pip install fastapi uvicorn  # For web API
+pip install aiohttp          # For dynamic tool loading
 pip install langfuse         # For monitoring
 ```
 
@@ -93,15 +105,117 @@ pip install langfuse         # For monitoring
 - **@prompt**: Template-based prompt management
 - **@planner**: Multi-step workflow coordination
 
-### 📊 **Observability**
+### 📊 **Enterprise Observability** 🆕
 - **@monitor**: Automatic performance tracking
 - **Telemetry**: Azure Monitor & Langfuse integration
+- **OpenTelemetry**: Full distributed tracing support
+- **Session Persistence**: Stateful conversation management
+- **Dynamic Registry**: Runtime agent/tool loading from Cosmos DB
 - **Error Handling**: Comprehensive exception system
 
 ### 🌐 **Web Platform** (Optional)
 - **FastAPI Integration**: REST API endpoints
 - **Streaming Support**: Real-time responses
 - **Middleware Pipeline**: Request/response processing
+
+## 🌩️ Azure Integration Features
+
+### 📋 **Externalized Agentic Registry (Cosmos DB)**
+Dynamically load agents and tools from Azure Cosmos DB at runtime:
+
+```python
+from energyai_sdk.clients import RegistryClient
+
+# Connect to Cosmos DB registry
+registry_client = RegistryClient(
+    cosmos_endpoint="https://your-account.documents.azure.com:443/",
+    cosmos_key="your_cosmos_key"
+)
+
+# List available tools and agents
+tools = await registry_client.list_tools()
+agents = await registry_client.list_agents()
+
+# Get specific definitions
+tool_def = await registry_client.get_tool_definition("energy_calculator")
+agent_def = await registry_client.get_agent_definition("energy_analyst")
+```
+
+### 💾 **Externalized Context Store (Cosmos DB)**
+Persistent conversation sessions across requests:
+
+```python
+from energyai_sdk.clients import ContextStoreClient
+
+# Session persistence
+context_store = ContextStoreClient(cosmos_endpoint, cosmos_key)
+
+# Create session with initial context
+session = await context_store.create_session(
+    session_id="user_consultation",
+    subject_id="energy_developer_123",
+    initial_context={"project_type": "solar", "capacity_mw": 100}
+)
+
+# Chat messages automatically stored in session context
+# Conversation context persists across server restarts
+```
+
+### 📊 **Integrated Observability (OpenTelemetry + Azure Monitor)**
+Enterprise-grade monitoring and tracing:
+
+```python
+from energyai_sdk.clients import MonitoringClient, MonitoringConfig
+
+# Configure monitoring
+config = MonitoringConfig(
+    service_name="energyai-production",
+    environment="production",
+    azure_monitor_connection_string="InstrumentationKey=your_key"
+)
+
+monitoring_client = MonitoringClient(config)
+
+# Automatic tracing and metrics
+with monitoring_client.start_span("energy_analysis") as span:
+    # Agent operations are automatically traced
+    # Metrics collected: execution time, success rate, error types
+```
+
+### 🔄 **Dynamic Tool Loading**
+Load tools from registry into Semantic Kernel at runtime:
+
+```python
+from energyai_sdk.core import KernelFactory
+
+# Create kernel and load tools from registry
+kernel = KernelFactory.create_kernel()
+loaded_count = await KernelFactory.load_tools_from_registry(kernel, registry_client)
+
+print(f"Loaded {loaded_count} tools from registry")
+# Tools with HTTP endpoints are automatically callable by agents
+```
+
+### 🏭 **Production-Ready Application**
+Full Azure integration in one line:
+
+```python
+from energyai_sdk.application import create_production_application
+
+# Complete production setup with Azure services
+app = create_production_application(
+    api_keys=["your_secure_api_key"],
+    cosmos_endpoint="https://your-account.documents.azure.com:443/",
+    cosmos_key="your_cosmos_key",
+    azure_monitor_connection_string="InstrumentationKey=your_key"
+)
+
+# Includes:
+# - Session management endpoints (/sessions/{id})
+# - Registry reload endpoint (/registry/reload)
+# - Enhanced health checks with external service status
+# - Automatic request tracing and metrics
+```
 
 ## 🚀 Core Examples
 
@@ -252,7 +366,11 @@ class EnergyProjectMaster:
 ## 📚 Documentation
 
 - **[Getting Started](Getting_started.md)** - Step-by-step beginner tutorial
+- **[Azure Integration Guide](docs/azure_integration.md)** - Complete Azure setup and deployment guide 🆕
 - **[Examples](examples/)** - Complete working examples for various scenarios
+  - `basic_agent.py` - Simple agent with Azure integration demo
+  - `production_azure_platform.py` - Full production Azure platform 🆕
+  - `azure_integration_example.py` - Comprehensive Azure features demo 🆕
 - **[API Reference](docs/api_reference.md)** - Detailed API documentation
 
 ## 🛠️ Development
@@ -279,6 +397,10 @@ pytest tests/ --cov=energyai_sdk --cov-report=term-missing
 
 # Test decorator functionality specifically
 pytest tests/test_agents.py::TestDecoratorBasedAgents -v
+
+# Test Azure integration features
+pytest tests/test_azure_integration.py -v
+pytest tests/test_application_azure.py -v
 ```
 
 ## 🧪 Example Usage Patterns
@@ -357,14 +479,23 @@ Want to see it in action? Check out these examples:
 
 ```bash
 # Try the basic examples
-python examples/basic_agent.py
+python examples/basic_agent.py --mode server
 python examples/energy_tools.py
 python examples/master_agent.py
 
-# Run the complete energy platform
-python examples/complete_platform.py --mode server
+# Try the new Azure integration examples 🆕
+python examples/azure_integration_example.py
+python examples/production_azure_platform.py --demo
+python examples/production_azure_platform.py --mode dev --port 8000
+
+# Run the complete production platform (requires Azure setup)
+python examples/production_azure_platform.py --mode prod
 ```
 
 ---
 
-**🚀 Ready to build powerful AI agents with simple decorators? Get started with the [Getting Started Guide](Getting_started.md)!**
+**🚀 Ready to build powerful AI agents with simple decorators and enterprise Azure integration?**
+
+🌟 **Get started with the [Getting Started Guide](Getting_started.md)!**
+
+☁️ **For production Azure deployment, see the [Azure Integration Guide](docs/azure_integration.md)!**

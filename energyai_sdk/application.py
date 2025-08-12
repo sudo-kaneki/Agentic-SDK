@@ -20,6 +20,16 @@ try:
 except ImportError:
     FASTAPI_AVAILABLE = False
 
+from .clients import (
+    ContextStoreClient,
+    MockContextStoreClient,
+    MockMonitoringClient,
+    MockRegistryClient,
+    MonitoringClient,
+    MonitoringConfig,
+    RegistryClient,
+)
+
 # Import from our SDK
 from .core import (
     AgentRequest,
@@ -42,7 +52,8 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(
         None, description="Session identifier for conversation continuity"
     )
-    user_id: Optional[str] = Field(None, description="User identifier")
+    subject_id: Optional[str] = Field(None, description="Subject/user identifier for context store")
+    user_id: Optional[str] = Field(None, description="User identifier (deprecated, use subject_id)")
     stream: bool = Field(False, description="Enable streaming response")
     temperature: Optional[float] = Field(
         None, description="Model temperature override", ge=0.0, le=2.0
@@ -123,6 +134,9 @@ class EnergyAIApplication:
         enable_cors: bool = True,
         enable_gzip: bool = True,
         debug: bool = False,
+        registry_client: Optional[RegistryClient] = None,
+        context_store_client: Optional[ContextStoreClient] = None,
+        monitoring_client: Optional[MonitoringClient] = None,
     ):
         self.title = title
         self.version = version
@@ -130,6 +144,11 @@ class EnergyAIApplication:
         self.debug = debug
         self.start_time = datetime.now(timezone.utc)
         self.logger = logging.getLogger(__name__)
+
+        # Initialize external service clients
+        self.registry_client = registry_client or MockRegistryClient()
+        self.context_store_client = context_store_client or MockContextStoreClient()
+        self.monitoring_client = monitoring_client or MockMonitoringClient()
 
         # Initialize middleware pipeline
         self.middleware_pipeline = middleware_pipeline or create_default_pipeline()
@@ -191,6 +210,13 @@ class EnergyAIApplication:
                 if telemetry_manager.azure_tracer or telemetry_manager.langfuse_client
                 else "not_configured"
             ),
+            "external_registry": (
+                "healthy" if await self.registry_client.health_check() else "unhealthy"
+            ),
+            "context_store": (
+                "healthy" if await self.context_store_client.health_check() else "unhealthy"
+            ),
+            "monitoring": "healthy" if self.monitoring_client.health_check() else "unhealthy",
         }
 
         self.is_ready = True
@@ -199,6 +225,14 @@ class EnergyAIApplication:
     async def _shutdown(self):
         """Application shutdown logic."""
         self.logger.info("Shutting down EnergyAI Application...")
+
+        # Cleanup external clients
+        try:
+            await self.registry_client.close()
+            await self.context_store_client.close()
+            self.monitoring_client.shutdown()
+        except Exception as e:
+            self.logger.error(f"Error closing external clients: {e}")
 
         # Flush telemetry
         if telemetry_manager.langfuse_client:
@@ -359,6 +393,61 @@ class EnergyAIApplication:
             """Get OpenAPI schema for available tools."""
             return self._generate_tools_openapi()
 
+        # Add route to load tools/agents from external registry
+        @app.post("/registry/reload")
+        async def reload_from_registry():
+            """Reload tools and agents from external registry."""
+            try:
+                # Load tools from registry
+                tools = await self.registry_client.list_tools()
+                loaded_tools = len(tools)
+
+                # Load agents from registry
+                agents = await self.registry_client.list_agents()
+                loaded_agents = len(agents)
+
+                return {
+                    "status": "success",
+                    "tools_available": loaded_tools,
+                    "agents_available": loaded_agents,
+                    "timestamp": datetime.now(timezone.utc),
+                }
+
+            except Exception as e:
+                self.logger.error(f"Error checking registry: {e}")
+                raise HTTPException(status_code=500, detail=f"Registry check failed: {e}")
+
+        # Session management endpoints
+        @app.post("/sessions/{session_id}")
+        async def create_session(session_id: str, subject_id: str):
+            """Create a new session."""
+            try:
+                session_doc = await self.context_store_client.create_session(
+                    session_id=session_id,
+                    subject_id=subject_id,
+                    initial_context={"messages": [], "created_via": "api"},
+                )
+                return {"status": "created", "session": session_doc.to_dict()}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Session creation failed: {e}")
+
+        @app.get("/sessions/{session_id}")
+        async def get_session(session_id: str):
+            """Get session information."""
+            session_doc = await self.context_store_client.get_session(session_id)
+            if not session_doc:
+                raise HTTPException(status_code=404, detail="Session not found")
+            return session_doc.to_dict()
+
+        @app.delete("/sessions/{session_id}")
+        async def delete_session(session_id: str):
+            """Delete a session."""
+            success = await self.context_store_client.delete_session(session_id)
+            if success:
+                return {"status": "deleted"}
+            else:
+                raise HTTPException(status_code=404, detail="Session not found")
+
     @monitor("application.process_chat_request")
     async def _process_chat_request(
         self, request: ChatRequest, background_tasks: BackgroundTasks
@@ -380,17 +469,37 @@ class EnergyAIApplication:
         if not agent:
             raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
 
+        # Handle session persistence if session_id provided
+        subject_id = request.subject_id or request.user_id or "anonymous"
+        if request.session_id:
+            try:
+                # Try to retrieve existing session context
+                session_doc = await self.context_store_client.get_session(request.session_id)
+                if not session_doc:
+                    # Create new session
+                    session_doc = await self.context_store_client.create_session(
+                        session_id=request.session_id,
+                        subject_id=subject_id,
+                        initial_context={"messages": []},
+                    )
+            except Exception as e:
+                self.logger.warning(f"Error handling session {request.session_id}: {e}")
+                session_doc = None
+        else:
+            session_doc = None
+
         # Create agent request
         agent_request = AgentRequest(
             message=request.message,
             agent_id=agent_id,
             session_id=request.session_id,
-            user_id=request.user_id,
+            user_id=subject_id,
             metadata={
                 **request.metadata,
                 "temperature": request.temperature,
                 "max_tokens": request.max_tokens,
                 "streaming": request.stream,
+                "session_context": session_doc.context if session_doc else {},
             },
         )
 
@@ -403,17 +512,49 @@ class EnergyAIApplication:
 
             # If middleware didn't process the request (no response), process with agent
             if not context.response and not context.error:
-                context.response = await agent.process_request(agent_request)
+                with self.monitoring_client.start_span(
+                    "agent.process_request", agent_id=agent_id, session_id=request.session_id
+                ):
+                    context.response = await agent.process_request(agent_request)
 
             # Handle errors
             if context.error:
+                self.monitoring_client.record_metric(
+                    "chat_request_errors",
+                    1.0,
+                    {"agent_id": agent_id, "error_type": type(context.error).__name__},
+                )
                 raise HTTPException(status_code=500, detail=str(context.error))
 
             if not context.response:
                 raise HTTPException(status_code=500, detail="No response generated")
 
+            # Update session context if session_id provided
+            if request.session_id and context.response:
+                try:
+                    await self.context_store_client.append_to_context(
+                        session_id=request.session_id,
+                        key="messages",
+                        value={
+                            "user": request.message,
+                            "assistant": context.response.content,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "agent_id": agent_id,
+                        },
+                    )
+                except Exception as e:
+                    self.logger.warning(f"Error updating session context: {e}")
+
             # Convert to API response
             execution_time = int((time.time() - start_time) * 1000)
+
+            # Record metrics
+            self.monitoring_client.record_metric(
+                "chat_request_duration", execution_time, {"agent_id": agent_id, "status": "success"}
+            )
+            self.monitoring_client.record_metric(
+                "chat_request_count", 1.0, {"agent_id": agent_id, "status": "success"}
+            )
 
             return ChatResponse(
                 content=context.response.content,
@@ -563,6 +704,9 @@ def create_application(
     enable_default_middleware: bool = True,
     enable_cors: bool = True,
     debug: bool = False,
+    registry_client: Optional[RegistryClient] = None,
+    context_store_client: Optional[ContextStoreClient] = None,
+    monitoring_client: Optional[MonitoringClient] = None,
     **middleware_config,
 ) -> EnergyAIApplication:
     """Create an EnergyAI application with optional default configuration."""
@@ -579,6 +723,9 @@ def create_application(
         middleware_pipeline=middleware_pipeline,
         enable_cors=enable_cors,
         debug=debug,
+        registry_client=registry_client,
+        context_store_client=context_store_client,
+        monitoring_client=monitoring_client,
     )
 
 
@@ -588,7 +735,9 @@ def create_production_application(
     langfuse_public_key: Optional[str] = None,
     langfuse_secret_key: Optional[str] = None,
     max_requests_per_minute: int = 100,
-    enable_caching: bool = True,
+    cosmos_endpoint: Optional[str] = None,
+    cosmos_key: Optional[str] = None,
+    otlp_endpoint: Optional[str] = None,
 ) -> EnergyAIApplication:
     """Create a production-ready application with security and monitoring."""
 
@@ -599,6 +748,26 @@ def create_production_application(
         langfuse_secret_key=langfuse_secret_key,
         log_level="INFO",
     )
+
+    # Initialize external service clients for production
+    registry_client = None
+    context_store_client = None
+    monitoring_client = None
+
+    if cosmos_endpoint and cosmos_key:
+        registry_client = RegistryClient(cosmos_endpoint, cosmos_key)
+        context_store_client = ContextStoreClient(cosmos_endpoint, cosmos_key)
+
+    if azure_monitor_connection_string or otlp_endpoint:
+        monitoring_config = MonitoringConfig(
+            service_name="energyai-production",
+            environment="production",
+            azure_monitor_connection_string=azure_monitor_connection_string,
+            otlp_trace_endpoint=otlp_endpoint,
+            otlp_metrics_endpoint=otlp_endpoint,
+        )
+        monitoring_client = MonitoringClient(monitoring_config)
+        monitoring_client.initialize()
 
     # Import production middleware
     from .middleware import create_production_pipeline
@@ -617,6 +786,9 @@ def create_production_application(
         middleware_pipeline=middleware_pipeline,
         enable_cors=False,  # More restrictive CORS in production
         debug=False,
+        registry_client=registry_client,
+        context_store_client=context_store_client,
+        monitoring_client=monitoring_client,
     )
 
 
