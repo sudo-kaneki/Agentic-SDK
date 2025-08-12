@@ -1,7 +1,7 @@
 """
-Example: Unified Observability in EnergyAI SDK
+Example: Unified Monitoring in EnergyAI SDK
 
-This example demonstrates how to use the unified ObservabilityManager
+This example demonstrates how to use the unified MonitoringClient
 to monitor and trace agent interactions, including:
 
 1. Langfuse for LLM-specific observability
@@ -16,7 +16,7 @@ from datetime import datetime
 
 from energyai_sdk import agent, monitor, tool
 from energyai_sdk.application import create_application
-from energyai_sdk.observability import get_observability_manager
+from energyai_sdk.clients.monitoring import get_monitoring_client
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -67,10 +67,10 @@ class EnergyAdvisor:
         )
 
 
-async def demonstrate_unified_observability():
-    """Demonstrate the unified observability system."""
+async def demonstrate_unified_monitoring():
+    """Demonstrate the unified monitoring system."""
 
-    print("🔭 EnergyAI SDK - Unified Observability Demo")
+    print("🔭 EnergyAI SDK - Unified Monitoring Demo")
     print("=" * 50)
 
     # Set up environment variables for demonstration
@@ -79,12 +79,11 @@ async def demonstrate_unified_observability():
     os.environ.setdefault("LANGFUSE_SECRET_KEY", "sk_demo_key")
     os.environ.setdefault("AZURE_MONITOR_CONNECTION_STRING", "InstrumentationKey=demo-key")
 
-    # Create application with unified observability
-    print("\n📊 Creating application with unified observability...")
+    # Create application with unified monitoring
+    print("\n📊 Creating application with unified monitoring...")
     app = create_application(
         title="Energy Advisor Platform",
-        enable_observability=True,  # Enable the unified observability system
-        enable_langfuse_monitoring=True,
+        enable_observability=True,  # Enable the unified monitoring system
         langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
         langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
         azure_monitor_connection_string=os.getenv("AZURE_MONITOR_CONNECTION_STRING"),
@@ -93,47 +92,55 @@ async def demonstrate_unified_observability():
     # Initialize the application
     await app._startup()
 
-    # Get the observability manager
-    observability = get_observability_manager()
-    if observability:
-        print(f"✅ Observability manager initialized: {type(observability).__name__}")
-        print(f"✅ Langfuse initialized: {observability._langfuse_initialized}")
-        print(f"✅ OpenTelemetry initialized: {observability._otel_initialized}")
-
-        # Check health status
-        health = observability.health_check()
-        print(f"✅ Health status: {health}")
+    # Get the monitoring client
+    monitoring_client = get_monitoring_client()
+    if monitoring_client:
+        print(f"✅ Monitoring client initialized: {type(monitoring_client).__name__}")
+        health = monitoring_client.health_check()
+        print(f"✅ Monitoring health: {health}")
+        print(
+            f"✅ Langfuse enabled: {hasattr(monitoring_client, 'langfuse_client') and monitoring_client.langfuse_client is not None}"
+        )
+        print(
+            f"✅ OpenTelemetry enabled: {hasattr(monitoring_client, 'otel_client') and monitoring_client.otel_client is not None}"
+        )
     else:
-        print("❌ Observability manager not initialized")
+        print("❌ Monitoring client not initialized")
 
     # Demonstrate tracing with the unified system
     print("\n🔍 Creating a trace for user interaction...")
 
     # Create a trace for the entire user interaction
     trace = None
-    if observability and observability._langfuse_initialized:
-        trace = observability.create_trace(
+    if monitoring_client:
+        trace = monitoring_client.create_trace(
             name="energy-advisor-session",
             user_id="demo-user-123",
             session_id=f"session-{datetime.now().strftime('%Y%m%d%H%M%S')}",
             metadata={"demo": True, "scenario": "energy_savings_calculation"},
         )
-        print("✅ Trace created successfully")
+        if trace:
+            print("✅ Trace created successfully")
+        else:
+            print("⚠️  Trace creation skipped (Langfuse not configured)")
 
     # Simulate a user query with tracing
     print("\n👤 User: How much could I save if I improve my home's energy efficiency?")
 
     # Create a generation for the LLM call
     generation = None
-    if trace and observability and observability._langfuse_initialized:
-        generation = observability.create_generation(
+    if trace and monitoring_client:
+        generation = monitoring_client.create_generation(
             trace,
             name="energy-advisor-response",
             input_data={"query": "How much could I save if I improve my home's energy efficiency?"},
             model="gpt-4",
             model_parameters={"temperature": 0.7, "max_tokens": 300},
         )
-        print("✅ Generation created for LLM call")
+        if generation:
+            print("✅ Generation created for LLM call")
+        else:
+            print("⚠️  Generation creation skipped (Langfuse not configured)")
 
     # Simulate the agent's response
     response = (
@@ -145,8 +152,8 @@ async def demonstrate_unified_observability():
     print(f"🤖 EnergyAdvisor: {response}")
 
     # End the generation with the response
-    if generation and observability and observability._langfuse_initialized:
-        observability.end_generation(
+    if generation and monitoring_client:
+        monitoring_client.end_generation(
             generation,
             output=response,
             usage={"prompt_tokens": 150, "completion_tokens": 75, "total_tokens": 225},
@@ -158,10 +165,10 @@ async def demonstrate_unified_observability():
 
     # Create a span for the tool execution
     with (
-        observability.start_span(
+        monitoring_client.start_span(
             "tool.calculate_energy_savings", tool_name="calculate_energy_savings"
         )
-        if observability
+        if monitoring_client
         else nullcontext()
     ):
         # Simulate tool execution
@@ -169,8 +176,8 @@ async def demonstrate_unified_observability():
         print(f"📊 Savings calculation: {savings}")
 
     # Update the trace with final results
-    if trace and observability and observability._langfuse_initialized:
-        observability.update_trace(
+    if trace and monitoring_client:
+        monitoring_client.update_trace(
             trace,
             output="Energy savings calculation completed successfully",
             metadata={"savings_calculated": True, "savings_kwh": savings["savings_kwh"]},
@@ -178,8 +185,8 @@ async def demonstrate_unified_observability():
         print("✅ Trace updated with final results")
 
     # Flush telemetry data
-    if observability:
-        observability.flush()
+    if monitoring_client:
+        monitoring_client.flush()
         print("✅ Telemetry data flushed")
 
     # Shutdown the application
@@ -218,10 +225,10 @@ async def demonstrate_monitoring_decorator():
 
 if __name__ == "__main__":
     """
-    Run the unified observability demonstration.
+    Run the unified monitoring demonstration.
 
     This example shows:
-    1. How to configure the unified observability system
+    1. How to configure the unified monitoring system (Langfuse + OpenTelemetry)
     2. How to use Langfuse for LLM-specific monitoring
     3. How to use OpenTelemetry for general application monitoring
     4. How to use the @monitor decorator for function-level monitoring
@@ -232,27 +239,26 @@ if __name__ == "__main__":
        - LANGFUSE_SECRET_KEY: Your Langfuse secret key
        - AZURE_MONITOR_CONNECTION_STRING: Your Azure Monitor connection string
 
-    2. Enable observability in your application:
+    2. Enable monitoring in your application:
        app = create_application(
            enable_observability=True,
-           enable_langfuse_monitoring=True,
            langfuse_public_key=os.getenv('LANGFUSE_PUBLIC_KEY'),
            langfuse_secret_key=os.getenv('LANGFUSE_SECRET_KEY'),
            azure_monitor_connection_string=os.getenv('AZURE_MONITOR_CONNECTION_STRING'),
        )
 
-    3. Access the observability manager:
-       observability = get_observability_manager()
+    3. Access the monitoring client:
+       monitoring_client = get_monitoring_client()
 
-    4. Use the observability manager to create traces, spans, etc.:
-       trace = observability.create_trace(...)
-       generation = observability.create_generation(...)
-       with observability.start_span(...):
+    4. Use the monitoring client to create traces, spans, etc.:
+       trace = monitoring_client.create_trace(...)
+       generation = monitoring_client.create_generation(...)
+       with monitoring_client.start_span(...):
            # Do work
     """
 
     async def run_demos():
-        await demonstrate_unified_observability()
+        await demonstrate_unified_monitoring()
         await demonstrate_monitoring_decorator()
 
     asyncio.run(run_demos())

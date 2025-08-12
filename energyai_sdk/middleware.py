@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 # Import from our core foundation
-from .core import AgentRequest, AgentResponse, monitor, telemetry_manager
+from .core import AgentRequest, AgentResponse, monitor
 
 # Middleware context and pipeline
 
@@ -662,23 +662,21 @@ class TelemetryMiddleware(AgentMiddleware):
         if self.include_metadata:
             trace_metadata.update(context.request.metadata)
 
-        with telemetry_manager.trace_operation(
-            f"middleware_request_{context.request.agent_id}", trace_metadata
-        ) as trace_id:
-            context.telemetry_data["trace_id"] = trace_id
+        # Telemetry tracing removed - use monitoring client instead
+        # TODO: Integrate with new monitoring client for tracing
 
-            # Execute next middleware
-            await next_middleware(context)
+        # Execute next middleware
+        await next_middleware(context)
 
-            # Add response data to telemetry
-            if context.response:
-                context.telemetry_data.update(
-                    {
-                        "response_length": len(context.response.content),
-                        "execution_time_ms": context.response.execution_time_ms,
-                        "success": context.response.error is None,
-                    }
-                )
+        # Add response data to telemetry (for backward compatibility)
+        if context.response:
+            context.telemetry_data.update(
+                {
+                    "response_length": len(context.response.content),
+                    "execution_time_ms": context.response.execution_time_ms,
+                    "success": context.response.error is None,
+                }
+            )
 
 
 # ==============================================================================

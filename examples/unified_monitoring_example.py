@@ -1,8 +1,9 @@
 """
-Example: EnergyAI Application with Langfuse Monitoring Integration
+Example: EnergyAI Application with Unified Monitoring Integration
 
 This example demonstrates how to create an EnergyAI application with comprehensive
-Langfuse monitoring for observability into agent interactions and LLM calls.
+monitoring using the new unified MonitoringClient that integrates both Langfuse
+and OpenTelemetry for complete observability into agent interactions and LLM calls.
 """
 
 import asyncio
@@ -95,25 +96,25 @@ class EnergyAdvisorMonitored:
         return "I provide personalized energy efficiency advice with comprehensive monitoring and analytics."
 
 
-async def demonstrate_langfuse_monitoring():
-    """Demonstrate Langfuse monitoring integration with the EnergyAI application."""
+async def demonstrate_unified_monitoring():
+    """Demonstrate unified monitoring integration with the EnergyAI application."""
 
-    print("🔍 EnergyAI Langfuse Monitoring Demo")
+    print("🔍 EnergyAI Unified Monitoring Demo")
     print("=" * 40)
 
-    # Set up mock Langfuse credentials for demo
+    # Set up mock credentials for demo
     # In production, these would be real credentials
     os.environ.setdefault("LANGFUSE_PUBLIC_KEY", "pk_demo_key_for_testing")
     os.environ.setdefault("LANGFUSE_SECRET_KEY", "sk_demo_key_for_testing")
 
     try:
-        # Create application with Langfuse monitoring enabled
-        print("📊 Creating EnergyAI application with Langfuse monitoring...")
+        # Create application with unified monitoring enabled
+        print("📊 Creating EnergyAI application with unified monitoring...")
         app = create_application(
             title="EnergyAI Monitoring Platform",
             debug=True,
             enable_context_store=True,
-            enable_langfuse_monitoring=True,  # Enable Langfuse monitoring
+            enable_observability=True,  # Enable unified monitoring
             langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
             langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
             langfuse_host="https://cloud.langfuse.com",
@@ -122,9 +123,15 @@ async def demonstrate_langfuse_monitoring():
 
         print(f"✅ Application created: {app.title}")
         print(f"✅ Context store enabled: {app.context_store_client is not None}")
-        print(f"✅ Langfuse monitoring enabled: {app.langfuse_client is not None}")
-        if app.langfuse_client:
-            print(f"✅ Langfuse client available: {app.langfuse_client.is_enabled()}")
+
+        # Check monitoring client status
+        from energyai_sdk.clients.monitoring import get_monitoring_client
+
+        monitoring_client = get_monitoring_client()
+        print(f"✅ Unified monitoring enabled: {monitoring_client is not None}")
+        if monitoring_client:
+            health = monitoring_client.health_check()
+            print(f"✅ Monitoring health: {health}")
 
         # Initialize the app
         await app._startup()
@@ -191,13 +198,14 @@ async def demonstrate_langfuse_monitoring():
                 print(f"⏱️  Response time: {response.execution_time_ms}ms")
 
                 # Show monitoring status
-                if app.langfuse_client and app.langfuse_client.is_enabled():
-                    print("📊 Langfuse trace created successfully")
+                if monitoring_client:
+                    print("📊 Monitoring trace created successfully")
                     print("   - Trace includes: session context, agent invocation, tool calls")
                     print("   - Generation tracked with model parameters and usage")
                     print("   - Error handling and performance metrics captured")
+                    print("   - Both Langfuse and OpenTelemetry data collected")
                 else:
-                    print("⚠️  Langfuse monitoring not available (expected for demo)")
+                    print("⚠️  Unified monitoring not available (expected for demo)")
 
                 # Show session stats
                 if app.context_store_client:
@@ -216,18 +224,20 @@ async def demonstrate_langfuse_monitoring():
             print("-" * 50)
 
         # Demonstrate monitoring features
-        print("\n📊 LANGFUSE MONITORING FEATURES")
+        print("\n📊 UNIFIED MONITORING FEATURES")
         print("=" * 50)
 
         monitoring_features = [
-            "🎯 Trace Creation: Each conversation gets a unique trace",
+            "🎯 Dual Tracing: Each conversation tracked in both Langfuse and OpenTelemetry",
             "🔄 Session Tracking: Multi-turn conversations linked by session_id",
-            "🤖 Generation Monitoring: LLM calls tracked with inputs/outputs",
-            "⚡ Performance Metrics: Response times and token usage",
+            "🤖 LLM Generation Monitoring: Model calls tracked with inputs/outputs (Langfuse)",
+            "⚡ Performance Metrics: Response times and system metrics (OpenTelemetry)",
             "🛠️  Tool Usage: Function calls and results monitored",
-            "❌ Error Tracking: Exceptions and failures captured",
-            "🏷️  Metadata: Rich context and tags for filtering",
-            "📈 Analytics: Trends and patterns in Langfuse dashboard",
+            "❌ Error Tracking: Exceptions captured in both systems",
+            "🏷️  Rich Metadata: Context and tags for filtering and analysis",
+            "📈 Dual Analytics: Langfuse for LLM insights, OpenTelemetry for system metrics",
+            "🔧 Easy Configuration: Single config for both monitoring systems",
+            "🧪 Mock Support: Full testing capabilities with MockMonitoringClient",
         ]
 
         for feature in monitoring_features:
@@ -252,35 +262,40 @@ async def demonstrate_langfuse_monitoring():
         traceback.print_exc()
 
 
-async def demonstrate_langfuse_configuration():
-    """Demonstrate different Langfuse configuration options."""
+async def demonstrate_monitoring_configuration():
+    """Demonstrate different unified monitoring configuration options."""
 
-    print("\n⚙️  Langfuse Configuration Demo")
-    print("=" * 35)
+    print("\n⚙️  Unified Monitoring Configuration Demo")
+    print("=" * 45)
 
-    # Show different ways to configure Langfuse
+    # Show different ways to configure unified monitoring
     configurations = [
         {
-            "name": "Development Configuration",
+            "name": "Development Configuration (Langfuse Only)",
             "params": {
+                "enable_observability": True,
                 "langfuse_host": "https://cloud.langfuse.com",
                 "langfuse_environment": "development",
                 "debug": True,
             },
         },
         {
-            "name": "Production Configuration",
+            "name": "Production Configuration (Langfuse + Azure Monitor)",
             "params": {
+                "enable_observability": True,
                 "langfuse_host": "https://cloud.langfuse.com",
                 "langfuse_environment": "production",
+                "azure_monitor_connection_string": "InstrumentationKey=your-key",
                 "debug": False,
             },
         },
         {
-            "name": "Self-Hosted Configuration",
+            "name": "OpenTelemetry Only Configuration",
             "params": {
-                "langfuse_host": "https://langfuse.your-domain.com",
-                "langfuse_environment": "production",
+                "enable_observability": True,
+                "langfuse_public_key": None,  # Disable Langfuse
+                "langfuse_secret_key": None,
+                "azure_monitor_connection_string": "InstrumentationKey=your-key",
                 "debug": False,
             },
         },
@@ -294,57 +309,79 @@ async def demonstrate_langfuse_configuration():
         # Show how to create app with this config
         print("   Usage:")
         print("   app = create_application(")
-        print("       enable_langfuse_monitoring=True,")
         for key, value in config["params"].items():
             if isinstance(value, str):
                 print(f'       {key}="{value}",')
+            elif value is None:
+                print(f"       {key}=None,")
             else:
                 print(f"       {key}={value},")
-        print("       langfuse_public_key=os.getenv('LANGFUSE_PUBLIC_KEY'),")
-        print("       langfuse_secret_key=os.getenv('LANGFUSE_SECRET_KEY')")
+        if config["params"].get("langfuse_public_key") is not None:
+            print("       langfuse_public_key=os.getenv('LANGFUSE_PUBLIC_KEY'),")
+            print("       langfuse_secret_key=os.getenv('LANGFUSE_SECRET_KEY')")
         print("   )")
 
     print("\n💡 Environment Variables:")
     print("   LANGFUSE_PUBLIC_KEY: Your Langfuse public key")
     print("   LANGFUSE_SECRET_KEY: Your Langfuse secret key")
     print("   LANGFUSE_HOST: Langfuse server URL (optional)")
+    print("   AZURE_MONITOR_CONNECTION_STRING: Azure Application Insights connection string")
+    print("   OTLP_ENDPOINT: Custom OpenTelemetry collector endpoint")
+
+    print("\n🔧 Direct MonitoringClient Usage:")
+    print("   from energyai_sdk.clients.monitoring import MonitoringClient, MonitoringConfig")
+    print("   ")
+    print("   config = MonitoringConfig(")
+    print("       enable_langfuse=True,")
+    print("       langfuse_public_key='your-key',")
+    print("       langfuse_secret_key='your-secret',")
+    print("       enable_opentelemetry=True,")
+    print("       azure_monitor_connection_string='InstrumentationKey=your-key'")
+    print("   )")
+    print("   ")
+    print("   monitoring_client = MonitoringClient(config)")
+    print("   health = monitoring_client.health_check()")
+    print("   print(f'Monitoring health: {health}')")
 
 
 if __name__ == "__main__":
     """
-    Run the Langfuse monitoring demonstration.
+    Run the unified monitoring demonstration.
 
     This example shows:
-    1. How to create an application with Langfuse monitoring
-    2. How conversations are traced and monitored
+    1. How to create an application with unified monitoring (Langfuse + OpenTelemetry)
+    2. How conversations are traced and monitored in both systems
     3. How agent invocations and tool calls are captured
     4. How errors and performance metrics are tracked
-    5. How to configure Langfuse for different environments
+    5. How to configure monitoring for different environments
 
     Setup for production use:
-    1. Get Langfuse credentials from https://cloud.langfuse.com
+    1. Get credentials from monitoring providers:
+       - Langfuse: https://cloud.langfuse.com
+       - Azure Monitor: https://portal.azure.com
+
     2. Set environment variables:
        - LANGFUSE_PUBLIC_KEY: Your Langfuse public key
        - LANGFUSE_SECRET_KEY: Your Langfuse secret key
-       - LANGFUSE_HOST: Langfuse server URL (optional)
+       - AZURE_MONITOR_CONNECTION_STRING: Your Azure connection string
+       - OTLP_ENDPOINT: Custom OpenTelemetry collector endpoint (optional)
 
     3. Enable monitoring in your application:
        app = create_application(
-           enable_langfuse_monitoring=True,
+           enable_observability=True,
            langfuse_public_key=os.getenv('LANGFUSE_PUBLIC_KEY'),
-           langfuse_secret_key=os.getenv('LANGFUSE_SECRET_KEY')
+           langfuse_secret_key=os.getenv('LANGFUSE_SECRET_KEY'),
+           azure_monitor_connection_string=os.getenv('AZURE_MONITOR_CONNECTION_STRING')
        )
 
-    4. Use the Langfuse dashboard to analyze:
-       - Conversation flows and patterns
-       - Agent performance and response times
-       - Tool usage and effectiveness
-       - Error rates and debugging information
-       - User engagement and session analytics
+    4. Use monitoring dashboards to analyze:
+       - Langfuse: LLM conversations, agent flows, generation costs
+       - Azure Monitor/OpenTelemetry: System performance, errors, metrics
+       - Combined insights for comprehensive observability
     """
 
     async def run_demos():
-        await demonstrate_langfuse_monitoring()
-        await demonstrate_langfuse_configuration()
+        await demonstrate_unified_monitoring()
+        await demonstrate_monitoring_configuration()
 
     asyncio.run(run_demos())

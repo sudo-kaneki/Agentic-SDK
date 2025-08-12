@@ -18,7 +18,7 @@ try:
 except ImportError:
     COSMOS_AVAILABLE = False
 
-from ..exceptions import SDKError
+from ..exceptions import EnergyAISDKError
 
 
 @dataclass
@@ -94,7 +94,7 @@ class RegistryClient:
             tools_container: Tools container name (default: tools)
         """
         if not COSMOS_AVAILABLE:
-            raise SDKError(
+            raise EnergyAISDKError(
                 "Azure Cosmos DB SDK not available. Install with: pip install azure-cosmos"
             )
 
@@ -105,7 +105,7 @@ class RegistryClient:
         self.tools_container = tools_container
 
         self.logger = logging.getLogger(__name__)
-        self._client: Optional[CosmosClient] = None
+        self._client = None
         self._database = None
         self._agents_container = None
         self._tools_container = None
@@ -115,7 +115,7 @@ class RegistryClient:
         self._agent_cache: Dict[str, AgentDefinition] = {}
         self._cache_ttl = 300  # 5 minutes
 
-    async def _get_client(self) -> CosmosClient:
+    async def _get_client(self):
         """Get or create Cosmos DB client."""
         if self._client is None:
             self._client = CosmosClient(self.cosmos_endpoint, self.cosmos_key)
@@ -124,6 +124,75 @@ class RegistryClient:
             self._tools_container = self._database.get_container_client(self.tools_container)
 
         return self._client
+
+    async def get_agent_by_name(self, name: str) -> Optional[AgentDefinition]:
+        """
+        Fetch an agent definition by name from the registry.
+
+        Args:
+            name: The agent name
+
+        Returns:
+            AgentDefinition if found, None otherwise
+        """
+        return await self.get_agent_definition(name)
+
+    async def get_tool_by_name(self, name: str, version: str = "1.0.0") -> Optional[ToolDefinition]:
+        """
+        Fetch a tool definition by name and version from the registry.
+
+        Args:
+            name: The tool name
+            version: The tool version (default: "1.0.0")
+
+        Returns:
+            ToolDefinition if found, None otherwise
+        """
+        try:
+            await self._get_client()
+
+            # Query by name and version
+            query = "SELECT * FROM c WHERE c.name = @name AND c.version = @version"
+            parameters = [{"name": "@name", "value": name}, {"name": "@version", "value": version}]
+
+            results = []
+            async for item in self._tools_container.query_items(
+                query=query, parameters=parameters, enable_cross_partition_query=True
+            ):
+                tool_def = ToolDefinition(
+                    id=item["id"],
+                    name=item["name"],
+                    description=item["description"],
+                    category=item["category"],
+                    schema=item["schema"],
+                    endpoint_url=item.get("endpoint_url"),
+                    auth_config=item.get("auth_config"),
+                    version=item.get("version", "1.0.0"),
+                    tags=item.get("tags", []),
+                    created_at=(
+                        datetime.fromisoformat(item["created_at"])
+                        if item.get("created_at")
+                        else None
+                    ),
+                    updated_at=(
+                        datetime.fromisoformat(item["updated_at"])
+                        if item.get("updated_at")
+                        else None
+                    ),
+                )
+                results.append(tool_def)
+                break  # Return first match
+
+            if results:
+                self.logger.info(f"Retrieved tool by name: {name} v{version}")
+                return results[0]
+            else:
+                self.logger.warning(f"Tool not found: {name} v{version}")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"Error fetching tool by name {name} v{version}: {e}")
+            raise EnergyAISDKError(f"Failed to fetch tool by name: {e}") from e
 
     async def get_tool_definition(self, tool_id: str) -> Optional[ToolDefinition]:
         """
@@ -185,7 +254,7 @@ class RegistryClient:
             return None
         except Exception as e:
             self.logger.error(f"Error fetching tool definition {tool_id}: {e}")
-            raise SDKError(f"Failed to fetch tool definition: {e}") from e
+            raise EnergyAISDKError(f"Failed to fetch tool definition: {e}") from e
 
     async def get_agent_definition(self, agent_id: str) -> Optional[AgentDefinition]:
         """
@@ -248,7 +317,7 @@ class RegistryClient:
             return None
         except Exception as e:
             self.logger.error(f"Error fetching agent definition {agent_id}: {e}")
-            raise SDKError(f"Failed to fetch agent definition: {e}") from e
+            raise EnergyAISDKError(f"Failed to fetch agent definition: {e}") from e
 
     async def list_tools(
         self, category: Optional[str] = None, tags: Optional[List[str]] = None, limit: int = 100
@@ -321,7 +390,7 @@ class RegistryClient:
 
         except Exception as e:
             self.logger.error(f"Error listing tools: {e}")
-            raise SDKError(f"Failed to list tools: {e}") from e
+            raise EnergyAISDKError(f"Failed to list tools: {e}") from e
 
     async def list_agents(
         self, tags: Optional[List[str]] = None, limit: int = 100
@@ -387,7 +456,7 @@ class RegistryClient:
 
         except Exception as e:
             self.logger.error(f"Error listing agents: {e}")
-            raise SDKError(f"Failed to list agents: {e}") from e
+            raise EnergyAISDKError(f"Failed to list agents: {e}") from e
 
     async def health_check(self) -> bool:
         """
@@ -441,6 +510,22 @@ class MockRegistryClient(RegistryClient):
         self.logger = logging.getLogger(__name__)
         self._tool_cache = {}
         self._agent_cache = {}
+
+    async def get_agent_by_name(self, name: str) -> Optional[AgentDefinition]:
+        """Mock agent fetching by name."""
+        return await self.get_agent_definition(name)
+
+    async def get_tool_by_name(self, name: str, version: str = "1.0.0") -> Optional[ToolDefinition]:
+        """Mock tool fetching by name and version."""
+        # For mock, we'll map name to tool_id
+        tool_id_map = {
+            "energy_calculator": "energy_calculator",
+            "carbon_calculator": "carbon_calculator",
+        }
+        tool_id = tool_id_map.get(name)
+        if tool_id:
+            return await self.get_tool_definition(tool_id)
+        return None
 
     async def get_tool_definition(self, tool_id: str) -> Optional[ToolDefinition]:
         """Mock tool fetching with sample data."""

@@ -457,57 +457,79 @@ python scripts/deploy.py build
 python scripts/deploy.py upload
 ```
 
-## 🔭 Unified Observability System
+## 🔭 Unified Monitoring & Observability
 
-EnergyAI SDK provides a comprehensive unified observability system that integrates:
+EnergyAI SDK provides a comprehensive unified monitoring system that seamlessly integrates:
 
-1. **Langfuse** for LLM-specific observability (traces, generations, spans)
-2. **OpenTelemetry** for general application monitoring (metrics, traces, logs)
-3. **Azure Monitor** integration for cloud deployments
+1. **🤖 Langfuse** for LLM-specific observability (conversation traces, generation costs, model performance)
+2. **📈 OpenTelemetry** for system monitoring (performance metrics, distributed tracing, error tracking)
+3. **☁️ Azure Monitor** for cloud-native monitoring and alerting
 
-### 1. Enable Observability
+### 1. Enable Monitoring
 
+**Option A: Through SDK Initialization (Simple)**
 ```python
 from energyai_sdk import initialize_sdk
 
-# Enable observability during SDK initialization
+# Enable monitoring during SDK initialization
 initialize_sdk(
-    langfuse_public_key="your_langfuse_public_key",
-    langfuse_secret_key="your_langfuse_secret_key",
-    azure_monitor_connection_string="your_connection_string",
+    # LLM monitoring with Langfuse
+    langfuse_public_key="pk_your_langfuse_public_key",
+    langfuse_secret_key="sk_your_langfuse_secret_key",
+    # System monitoring with OpenTelemetry + Azure
+    azure_monitor_connection_string="InstrumentationKey=your_key",
     environment="production"  # or "development", "staging"
 )
 ```
 
-### 2. Monitor Functions and Methods
+**Option B: Direct MonitoringClient (Advanced)**
+```python
+from energyai_sdk.clients.monitoring import MonitoringClient, MonitoringConfig
+
+# Configure unified monitoring
+config = MonitoringConfig(
+    service_name="my-energy-app",
+    environment="production",
+    # Enable both monitoring systems
+    enable_langfuse=True,
+    langfuse_public_key="pk_your_key",
+    langfuse_secret_key="sk_your_secret",
+    enable_opentelemetry=True,
+    azure_monitor_connection_string="InstrumentationKey=your_key"
+)
+
+monitoring_client = MonitoringClient(config)
+```
+
+### 2. Automatic Function Monitoring
 
 ```python
 from energyai_sdk import monitor
 
-@monitor("energy_calculation")
+@monitor("energy_calculation")  # Tracks performance in OpenTelemetry
 def calculate_energy_metrics(data):
-    # Your calculation logic
+    # Your calculation logic - automatically monitored
     return result
 ```
 
-### 3. Advanced Observability
+### 3. Advanced Monitoring - Dual LLM + System Tracking
 
 ```python
-from energyai_sdk import get_observability_manager
+from energyai_sdk.clients.monitoring import get_monitoring_client
 
-# Get the global observability manager
-observability = get_observability_manager()
+# Get the global monitoring client
+monitoring_client = get_monitoring_client()
 
-# Create a trace for a user session
-trace = observability.create_trace(
-    name="user-session",
+# Create a Langfuse trace for LLM conversation tracking
+trace = monitoring_client.create_trace(
+    name="user-energy-consultation",
     user_id="user123",
     session_id="session456",
-    metadata={"source": "web_app"}
+    metadata={"source": "web_app", "consultation_type": "energy_audit"}
 )
 
-# Create a generation for an LLM call
-generation = observability.create_generation(
+# Create a Langfuse generation for LLM call tracking
+generation = monitoring_client.create_generation(
     trace,
     name="energy-advice-generation",
     input_data={"query": "How can I reduce my energy bill?"},
@@ -515,26 +537,29 @@ generation = observability.create_generation(
     model_parameters={"temperature": 0.7}
 )
 
-# End the generation with the result
-observability.end_generation(
+# End the generation with the result (tracked in Langfuse)
+monitoring_client.end_generation(
     generation,
     output="Here are 5 ways to reduce your energy bill...",
     usage={"prompt_tokens": 150, "completion_tokens": 200, "total_tokens": 350}
 )
 
-# Use spans for general operations
-with observability.start_span("data_processing", source="sensor_data"):
-    # Process data
+# Use OpenTelemetry spans for system operations
+with monitoring_client.start_span("data_processing", source="sensor_data") as span:
+    # System performance tracked automatically
     processed_data = process_data(raw_data)
+    # Record business metric
+    monitoring_client.record_metric("data_points_processed", len(processed_data))
 
-# Update the trace with final results
-observability.update_trace(
+# Update the Langfuse trace with final results
+monitoring_client.update_trace(
     trace,
-    metadata={"processing_complete": True}
+    output="Energy consultation completed successfully",
+    metadata={"processing_complete": True, "recommendations_count": 5}
 )
 
-# Flush telemetry data
-observability.flush()
+# Flush all telemetry data (both Langfuse and OpenTelemetry)
+monitoring_client.flush()
 ```
 
 ### 4. Application Integration
@@ -542,13 +567,13 @@ observability.flush()
 ```python
 from energyai_sdk.application import create_application
 
-# Create application with unified observability
+# Create application with unified monitoring
 app = create_application(
-    enable_observability=True,
-    enable_langfuse_monitoring=True,
-    langfuse_public_key="your_langfuse_public_key",
-    langfuse_secret_key="your_langfuse_secret_key",
-    azure_monitor_connection_string="your_connection_string",
+    title="My Energy App",
+    enable_observability=True,  # Enables the unified monitoring system
+    langfuse_public_key="pk_your_langfuse_public_key",
+    langfuse_secret_key="sk_your_langfuse_secret_key",
+    azure_monitor_connection_string="InstrumentationKey=your_key",
     langfuse_environment="production"
 )
 ```
@@ -560,7 +585,7 @@ app = create_application(
 3. **Use Skills**: Group related tools into skills for better organization
 4. **Monitor Performance**: Use `@monitor` decorator for important functions
 5. **Handle Errors**: Wrap AI calls in try/catch blocks during development
-6. **Enable Observability**: Use the unified observability system for production applications
+6. **Enable Monitoring**: Use the unified monitoring system (Langfuse + OpenTelemetry) for production applications
 
 ### 🆘 Troubleshooting
 

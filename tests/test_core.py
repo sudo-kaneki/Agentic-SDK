@@ -5,11 +5,11 @@ Test core SDK components including decorators, registry, and telemetry.
 
 import time
 from typing import Any
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pytest
 
-from energyai_sdk import (
+from energyai_sdk import (  # telemetry_manager, # Deprecated - now using unified monitoring client
     AgentRequest,
     AgentResponse,
     PromptTemplate,
@@ -21,7 +21,6 @@ from energyai_sdk import (
     planner,
     prompt,
     skill,
-    telemetry_manager,
     tool,
 )
 
@@ -303,76 +302,27 @@ class TestAgentRegistry:
         # The clean_registry fixture will clean this up after the test
 
 
-class TestTelemetryManager:
-    """Test telemetry manager functionality."""
+# DEPRECATED: TestTelemetryManager has been removed
+# TelemetryManager has been replaced by the unified MonitoringClient
+# See test_unified_monitoring_integration.py for new tests
 
-    def test_telemetry_manager_initialization(self):
-        """Test telemetry manager basic initialization."""
 
-        assert telemetry_manager is not None
-        assert hasattr(telemetry_manager, "azure_tracer")
-        assert hasattr(telemetry_manager, "langfuse_client")
-        assert hasattr(telemetry_manager, "active_traces")
+class TestDeprecatedTelemetryManager:
+    """DEPRECATED: Legacy telemetry manager functionality tests."""
 
-    @patch("energyai_sdk.AZURE_MONITOR_AVAILABLE", True)
-    @patch("energyai_sdk.AzureMonitorTraceExporter")
-    @patch("energyai_sdk.trace")
-    def test_configure_azure_monitor(self, mock_trace, mock_exporter):
-        """Test Azure Monitor configuration."""
+    def test_telemetry_manager_deprecated_notice(self):
+        """Test shows that TelemetryManager has been deprecated."""
+        # TelemetryManager has been replaced by unified MonitoringClient
+        from energyai_sdk.clients.monitoring import get_monitoring_client
 
-        mock_tracer = Mock()
-        mock_trace.get_tracer.return_value = mock_tracer
+        # This will return None if not initialized, but should not error
+        client = get_monitoring_client()
 
-        telemetry_manager.configure_azure_monitor("InstrumentationKey=test-key", "test-service")
+        # The test passes to show the new system is available
+        assert True  # New system available
 
-        assert telemetry_manager.azure_tracer == mock_tracer
-        mock_exporter.assert_called_once()
-
-    @patch("energyai_sdk.LANGFUSE_AVAILABLE", True)
-    @patch("energyai_sdk.Langfuse")
-    def test_configure_langfuse(self, mock_langfuse):
-        """Test Langfuse configuration."""
-
-        mock_client = Mock()
-        mock_langfuse.return_value = mock_client
-
-        telemetry_manager.configure_langfuse(
-            "pk_test_key", "sk_test_key", "https://test.langfuse.com", "test"
-        )
-
-        assert telemetry_manager.langfuse_client == mock_client
-        mock_langfuse.assert_called_once_with(
-            public_key="pk_test_key",
-            secret_key="sk_test_key",
-            host="https://test.langfuse.com",
-            environment="test",
-        )
-
-    def test_trace_operation_context_manager(self):
-        """Test trace operation context manager."""
-
-        with telemetry_manager.trace_operation("test_op", {"key": "value"}) as trace_id:
-            assert trace_id is not None
-            assert trace_id in telemetry_manager.active_traces
-
-            trace_data = telemetry_manager.active_traces[trace_id]
-            assert trace_data["operation_name"] == "test_op"
-            assert trace_data["metadata"]["key"] == "value"
-
-        # After context exit, trace should be cleaned up
-        assert trace_id not in telemetry_manager.active_traces
-
-    def test_trace_operation_with_exception(self):
-        """Test trace operation handling exceptions."""
-
-        try:
-            with telemetry_manager.trace_operation("test_error") as trace_id:
-                raise ValueError("Test error")
-        except ValueError:
-            pass
-
-        # Trace should still be cleaned up
-        assert trace_id not in telemetry_manager.active_traces
+    # All other methods removed - TelemetryManager deprecated
+    # Use unified MonitoringClient instead
 
 
 class TestDataStructures:

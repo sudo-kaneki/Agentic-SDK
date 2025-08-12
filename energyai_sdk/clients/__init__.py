@@ -4,30 +4,59 @@ Client modules for external service integration.
 This package contains clients for:
 - Agentic Registry (Cosmos DB) - for fetching agent and tool definitions
 - Context Store (Cosmos DB) - for session persistence
-- Monitoring (OpenTelemetry) - for observability and telemetry
-- Langfuse - for LLM observability and tracing
+- Monitoring - unified monitoring and observability (OpenTelemetry + Langfuse)
 - Other external services
 """
 
 from .context_store_client import ContextStoreClient
 
-# Langfuse client - optional dependency
+# Registry client for fetching agent and tool definitions
 try:
-    from .langfuse_client import LangfuseMonitoringClient, configure_langfuse, get_langfuse_client
+    from .registry_client import AgentDefinition, MockRegistryClient, RegistryClient, ToolDefinition
 
-    LANGFUSE_CLIENT_AVAILABLE = True
+    REGISTRY_CLIENT_AVAILABLE = True
 except ImportError:
-    LANGFUSE_CLIENT_AVAILABLE = False
+    REGISTRY_CLIENT_AVAILABLE = False
+
+# Unified monitoring client
+try:
+    from .monitoring import (
+        MonitoringClient,
+        MonitoringConfig,
+        get_monitoring_client,
+        initialize_monitoring,
+        monitor,
+        monitor_agent_execution,
+        monitor_tool_execution,
+    )
+
+    MONITORING_CLIENT_AVAILABLE = True
+except ImportError:
+    MONITORING_CLIENT_AVAILABLE = False
 
 __all__ = [
     "ContextStoreClient",
 ]
 
-if LANGFUSE_CLIENT_AVAILABLE:
+if REGISTRY_CLIENT_AVAILABLE:
     __all__.extend(
         [
-            "LangfuseMonitoringClient",
-            "get_langfuse_client",
-            "configure_langfuse",
+            "RegistryClient",
+            "AgentDefinition",
+            "ToolDefinition",
+            "MockRegistryClient",
+        ]
+    )
+
+if MONITORING_CLIENT_AVAILABLE:
+    __all__.extend(
+        [
+            "MonitoringClient",
+            "MonitoringConfig",
+            "get_monitoring_client",
+            "initialize_monitoring",
+            "monitor_agent_execution",
+            "monitor_tool_execution",
+            "monitor",
         ]
     )

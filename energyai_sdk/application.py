@@ -22,20 +22,19 @@ except ImportError:
 
 from .clients import ContextStoreClient
 
-# Langfuse monitoring client - optional dependency
+# Monitoring client - unified observability
 try:
-    from .clients import LangfuseMonitoringClient, get_langfuse_client
+    from .clients.monitoring import MonitoringClient, get_monitoring_client
 
-    LANGFUSE_AVAILABLE = True
+    MONITORING_AVAILABLE = True
 except ImportError:
-    LangfuseMonitoringClient = None
-    get_langfuse_client = None
-    LANGFUSE_AVAILABLE = False
+    MonitoringClient = None
+    get_monitoring_client = None
+    MONITORING_AVAILABLE = False
 
 # Import from our SDK
 from .core import AgentRequest, CoreAgent, agent_registry, initialize_sdk, monitor
 from .middleware import MiddlewareContext, MiddlewarePipeline, create_default_pipeline
-from .observability import get_observability_manager
 
 # API models
 
@@ -131,7 +130,7 @@ class EnergyAIApplication:
         enable_gzip: bool = True,
         debug: bool = False,
         context_store_client: Optional[ContextStoreClient] = None,
-        langfuse_monitoring_client: Optional[LangfuseMonitoringClient] = None,
+        langfuse_monitoring_client: Optional[MonitoringClient] = None,
     ):
         self.title = title
         self.version = version
@@ -142,7 +141,8 @@ class EnergyAIApplication:
 
         # Initialize external service clients
         self.context_store_client = context_store_client
-        self.langfuse_client = langfuse_monitoring_client
+        # Legacy langfuse_client support - now use unified monitoring client
+        self.langfuse_monitoring_client = langfuse_monitoring_client
 
         # Initialize middleware pipeline
         self.middleware_pipeline = middleware_pipeline or create_default_pipeline()
@@ -200,18 +200,28 @@ class EnergyAIApplication:
             "agent_registry": "healthy" if agent_registry.agents else "no_agents",
             "middleware_pipeline": "healthy" if self.middleware_pipeline else "not_configured",
             "observability": (
-                "healthy" if get_observability_manager() is not None else "not_configured"
+                "healthy" if get_monitoring_client() is not None else "not_configured"
             ),
             "context_store": ("healthy" if self.context_store_client else "not_configured"),
-            "langfuse_monitoring": (
-                "healthy"
-                if self.langfuse_client and self.langfuse_client.is_enabled()
-                else "not_configured"
-            ),
+            "langfuse_monitoring": self._get_langfuse_status(),
         }
 
         self.is_ready = True
         self.logger.info("EnergyAI Application started successfully")
+
+    def _get_langfuse_status(self) -> str:
+        """Get Langfuse monitoring status."""
+        try:
+            monitoring_client = get_monitoring_client()
+            if monitoring_client and hasattr(monitoring_client, "langfuse_client"):
+                if (
+                    monitoring_client.langfuse_client
+                    and monitoring_client.langfuse_client.is_enabled()
+                ):
+                    return "healthy"
+            return "not_configured"
+        except Exception:
+            return "error"
 
     async def _shutdown(self):
         """Application shutdown logic."""
@@ -226,10 +236,10 @@ class EnergyAIApplication:
                 self.logger.error(f"Error cleaning up context store client: {e}")
 
         # Flush observability data
-        observability_manager = get_observability_manager()
-        if observability_manager:
+        monitoring_client = get_monitoring_client()
+        if monitoring_client:
             try:
-                observability_manager.flush()
+                monitoring_client.flush()
             except Exception as e:
                 self.logger.error(f"Error flushing observability data: {e}")
 
@@ -251,7 +261,7 @@ class EnergyAIApplication:
                 version=self.version,
                 agents_count=len(agent_registry.agents),
                 uptime_seconds=uptime,
-                observability_configured=bool(get_observability_manager() is not None),
+                observability_configured=bool(get_monitoring_client() is not None),
                 components=self.components_status,
             )
 
@@ -481,8 +491,14 @@ class EnergyAIApplication:
         generation = None
         context_span = None
 
-        if self.langfuse_client and self.langfuse_client.is_enabled():
-            trace = self.langfuse_client.create_trace(
+        monitoring_client = get_monitoring_client()
+        if (
+            monitoring_client
+            and hasattr(monitoring_client, "langfuse_client")
+            and monitoring_client.langfuse_client
+            and monitoring_client.langfuse_client.is_enabled()
+        ):
+            trace = monitoring_client.create_trace(
                 name=f"agent-run:{agent_id}",
                 user_id=request.subject_id or request.user_id or "anonymous",
                 session_id=request.session_id,
@@ -507,8 +523,8 @@ class EnergyAIApplication:
         conversation_history = ""
 
         # Create span for context loading
-        if trace and self.langfuse_client:
-            context_span = self.langfuse_client.create_span(
+        if trace and monitoring_client:
+            context_span = monitoring_client.create_span(
                 trace,
                 name="context-loading",
                 input_data={
@@ -547,8 +563,8 @@ class EnergyAIApplication:
                     self.logger.info(f"Created new session {request.session_id}")
 
                 # End context span with success
-                if context_span and self.langfuse_client:
-                    self.langfuse_client.end_span(
+                if context_span and monitoring_client:
+                    monitoring_client.end_span(
                         context_span,
                         output={
                             "session_found": bool(thread),
@@ -562,10 +578,8 @@ class EnergyAIApplication:
                 session_doc = None
 
                 # End context span with error
-                if context_span and self.langfuse_client:
-                    self.langfuse_client.end_span(
-                        context_span, level="ERROR", status_message=str(e)
-                    )
+                if context_span and monitoring_client:
+                    monitoring_client.end_span(context_span, level="ERROR", status_message=str(e))
 
         # Create agent request with conversation history
         message_with_context = request.message
@@ -593,7 +607,7 @@ class EnergyAIApplication:
 
         try:
             # Create Langfuse generation for the main LLM call
-            if trace and self.langfuse_client:
+            if trace and monitoring_client:
                 agent_capabilities = getattr(agent, "get_capabilities", lambda: {})()
                 model_name = (
                     agent_capabilities.get("models", ["unknown"])[0]
@@ -601,7 +615,7 @@ class EnergyAIApplication:
                     else "unknown"
                 )
 
-                generation = self.langfuse_client.create_generation(
+                generation = monitoring_client.create_generation(
                     trace,
                     name="agent-invocation",
                     input_data={
@@ -633,27 +647,27 @@ class EnergyAIApplication:
             # Handle errors
             if context.error:
                 # End generation with error
-                if generation and self.langfuse_client:
-                    self.langfuse_client.end_generation(
+                if generation and monitoring_client:
+                    monitoring_client.end_generation(
                         generation, level="ERROR", status_message=str(context.error)
                     )
                 raise HTTPException(status_code=500, detail=str(context.error))
 
             if not context.response:
                 # End generation with error
-                if generation and self.langfuse_client:
-                    self.langfuse_client.end_generation(
+                if generation and monitoring_client:
+                    monitoring_client.end_generation(
                         generation, level="ERROR", status_message="No response generated"
                     )
                 raise HTTPException(status_code=500, detail="No response generated")
 
             # End generation with success
-            if generation and self.langfuse_client:
+            if generation and monitoring_client:
                 # Try to extract token usage if available
                 response_metadata = getattr(context.response, "metadata", {})
                 usage = response_metadata.get("usage", {})
 
-                self.langfuse_client.end_generation(
+                monitoring_client.end_generation(
                     generation,
                     output=context.response.content,
                     usage=usage if usage else None,
@@ -712,8 +726,8 @@ class EnergyAIApplication:
 
         except HTTPException:
             # Update trace with HTTP error
-            if trace and self.langfuse_client:
-                self.langfuse_client.update_trace(
+            if trace and monitoring_client:
+                monitoring_client.update_trace(
                     trace, level="ERROR", status_message="HTTP Exception occurred"
                 )
             raise
@@ -722,19 +736,17 @@ class EnergyAIApplication:
             self.logger.error(traceback.format_exc())
 
             # End generation and trace with error
-            if generation and self.langfuse_client:
-                self.langfuse_client.end_generation(
-                    generation, level="ERROR", status_message=str(e)
-                )
-            if trace and self.langfuse_client:
-                self.langfuse_client.update_trace(trace, level="ERROR", status_message=str(e))
+            if generation and monitoring_client:
+                monitoring_client.end_generation(generation, level="ERROR", status_message=str(e))
+            if trace and monitoring_client:
+                monitoring_client.update_trace(trace, level="ERROR", status_message=str(e))
 
             raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
         finally:
             # Always update trace with final status and flush Langfuse data
-            if trace and self.langfuse_client:
+            if trace and monitoring_client:
                 execution_time = int((time.time() - start_time) * 1000)
-                self.langfuse_client.update_trace(
+                monitoring_client.update_trace(
                     trace,
                     metadata={
                         "execution_time_ms": execution_time,
@@ -744,7 +756,8 @@ class EnergyAIApplication:
                 )
 
                 # Flush all telemetry data to Langfuse
-                self.langfuse_client.flush()
+                if monitoring_client:
+                    monitoring_client.flush()
 
     async def _stream_chat_response(self, request: ChatRequest) -> AsyncGenerator[str, None]:
         """Stream chat response chunks."""
@@ -943,16 +956,19 @@ def create_application(
         except Exception as e:
             logging.getLogger(__name__).warning(f"Could not initialize ContextStoreClient: {e}")
 
-    # Initialize observability (if not already initialized)
+    # Initialize monitoring (if not already initialized)
     if enable_observability:
-        from .config import ObservabilityConfig
-        from .observability import get_observability_manager, initialize_observability
+        from .clients.monitoring import (
+            MonitoringConfig,
+            get_monitoring_client,
+            initialize_monitoring,
+        )
 
-        # Check if observability is already initialized
-        if get_observability_manager() is None:
+        # Check if monitoring is already initialized
+        if get_monitoring_client() is None:
             try:
-                # Create observability config
-                observability_config = ObservabilityConfig(
+                # Create monitoring config
+                monitoring_config = MonitoringConfig(
                     environment=langfuse_environment,
                     enable_langfuse=enable_langfuse_monitoring
                     and bool(langfuse_public_key and langfuse_secret_key),
@@ -963,25 +979,13 @@ def create_application(
                     azure_monitor_connection_string=azure_monitor_connection_string,
                 )
 
-                # Initialize observability
-                initialize_observability(observability_config)
-                logging.getLogger(__name__).info("Observability initialized")
+                # Initialize monitoring
+                initialize_monitoring(monitoring_config)
+                logging.getLogger(__name__).info("Monitoring initialized")
             except Exception as e:
-                logging.getLogger(__name__).warning(f"Could not initialize observability: {e}")
+                logging.getLogger(__name__).warning(f"Could not initialize monitoring: {e}")
 
-    # For backward compatibility, still support direct Langfuse client
-    langfuse_client = None
-    if enable_langfuse_monitoring and LANGFUSE_AVAILABLE and not enable_observability:
-        try:
-            langfuse_client = get_langfuse_client(
-                public_key=langfuse_public_key,
-                secret_key=langfuse_secret_key,
-                host=langfuse_host,
-                debug=debug,
-                environment=langfuse_environment,
-            )
-        except Exception as e:
-            logging.getLogger(__name__).warning(f"Could not initialize Langfuse monitoring: {e}")
+    # Legacy monitoring support is now handled by the unified MonitoringClient
 
     return EnergyAIApplication(
         title=title,
@@ -991,7 +995,7 @@ def create_application(
         enable_cors=enable_cors,
         enable_gzip=enable_gzip,
         context_store_client=context_store_client,
-        langfuse_monitoring_client=langfuse_client,
+        langfuse_monitoring_client=None,  # Now handled by unified monitoring client
     )
 
 

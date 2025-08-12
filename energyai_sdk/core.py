@@ -16,10 +16,7 @@ try:
 except ImportError:
     SEMANTIC_KERNEL_AVAILABLE = False
 
-from .config import ObservabilityConfig
-
-# Import observability manager
-from .observability import initialize_observability
+from .clients.monitoring import MonitoringConfig, initialize_monitoring
 
 # Data models
 
@@ -326,18 +323,18 @@ class AgentRegistry:
 # Telemetry
 
 
-# Telemetry and monitoring functionality has been moved to observability.py
+# Telemetry and monitoring functionality has been moved to clients/monitoring.py
 
 
 # Monitoring decorator
-# This is kept for backward compatibility but now delegates to observability.py
+# This is kept for backward compatibility but now delegates to clients/monitoring.py
 def monitor(operation_name: str):
     """Decorator for monitoring function execution."""
 
     # Import here to avoid circular imports
-    from .observability import monitor as observability_monitor
+    from .clients.monitoring import monitor as monitoring_decorator
 
-    return observability_monitor(operation_name)
+    return monitoring_decorator(operation_name)
 
 
 # Context store
@@ -406,11 +403,147 @@ class ContextStore:
             self.logger.info(f"Cleaned up {len(expired_sessions)} expired sessions")
 
 
-# Semantic Kernel factory
+# Kernel Management
 
 
+class KernelManager:
+    """
+    Manager for Semantic Kernel instances with caching and factory integration.
+
+    This manager acts as a caching layer over the KernelFactory, providing
+    efficient kernel retrieval and lifecycle management.
+    """
+
+    def __init__(self):
+        """Initialize the KernelManager."""
+        self.logger = logging.getLogger(__name__)
+        self._factory = None
+        self._kernel_cache = {}
+
+    def _get_factory(self):
+        """Get or create the KernelFactory instance."""
+        if self._factory is None:
+            from .clients.registry_client import RegistryClient
+            from .config import ConfigurationManager
+            from .kernel_factory import KernelFactory
+
+            # Initialize with real clients - this would be injected in production
+            config_manager = ConfigurationManager()
+
+            # For now, we'll use a placeholder for registry_client
+            # In production, this would be properly initialized
+            registry_client = None
+            try:
+                config = config_manager.get_config()
+                if hasattr(config, "cosmos_endpoint") and hasattr(config, "cosmos_key"):
+                    registry_client = RegistryClient(
+                        cosmos_endpoint=config.cosmos_endpoint,
+                        cosmos_key=config.cosmos_key,
+                    )
+            except Exception as e:
+                self.logger.warning(f"Could not initialize registry client: {e}")
+
+            self._factory = KernelFactory(
+                registry_client=registry_client,
+                config_manager=config_manager,
+            )
+
+        return self._factory
+
+    async def get_kernel_for_agent(
+        self, agent_name: str, force_rebuild: bool = False
+    ) -> Optional["Kernel"]:
+        """
+        Get a configured kernel for the specified agent.
+
+        Args:
+            agent_name: Name of the agent to get kernel for
+            force_rebuild: Whether to force rebuild even if cached
+
+        Returns:
+            Configured Semantic Kernel instance or None if not available
+        """
+        if not SEMANTIC_KERNEL_AVAILABLE:
+            self.logger.warning("Semantic Kernel not available")
+            return None
+
+        try:
+            # Check cache first (unless force rebuild)
+            if not force_rebuild and agent_name in self._kernel_cache:
+                self.logger.debug(f"Using cached kernel for agent: {agent_name}")
+                return self._kernel_cache[agent_name]
+
+            # Use factory to create new kernel
+            factory = self._get_factory()
+            kernel = await factory.create_kernel_for_agent(agent_name, force_rebuild)
+
+            # Cache the result
+            if kernel:
+                self._kernel_cache[agent_name] = kernel
+                self.logger.info(f"Created and cached kernel for agent: {agent_name}")
+
+            return kernel
+
+        except Exception as e:
+            self.logger.error(f"Failed to get kernel for agent {agent_name}: {e}")
+            return None
+
+    def get_cached_agent_names(self) -> list[str]:
+        """Get list of agent names with cached kernels."""
+        return list(self._kernel_cache.keys())
+
+    def clear_cache(self, agent_name: Optional[str] = None) -> None:
+        """
+        Clear kernel cache.
+
+        Args:
+            agent_name: Specific agent to clear, or None to clear all
+        """
+        if agent_name:
+            if agent_name in self._kernel_cache:
+                del self._kernel_cache[agent_name]
+                self.logger.info(f"Cleared cache for agent: {agent_name}")
+        else:
+            self._kernel_cache.clear()
+            self.logger.info("Cleared all kernel cache")
+
+    def invalidate_agent_cache(self, agent_name: str) -> None:
+        """
+        Invalidate cache for a specific agent.
+
+        Args:
+            agent_name: Name of agent to invalidate
+        """
+        self.clear_cache(agent_name)
+
+    async def refresh_agent_kernel(self, agent_name: str) -> Optional["Kernel"]:
+        """
+        Refresh kernel for an agent by forcing rebuild.
+
+        Args:
+            agent_name: Name of agent to refresh
+
+        Returns:
+            New kernel instance
+        """
+        return await self.get_kernel_for_agent(agent_name, force_rebuild=True)
+
+    def get_cache_stats(self) -> dict[str, Any]:
+        """Get cache statistics."""
+        return {
+            "cached_agents": len(self._kernel_cache),
+            "agent_names": list(self._kernel_cache.keys()),
+            "factory_initialized": self._factory is not None,
+        }
+
+
+# Legacy KernelFactory for backward compatibility
 class KernelFactory:
-    """Factory for creating Semantic Kernel instances with dynamic tool loading."""
+    """
+    Legacy KernelFactory for backward compatibility.
+
+    Note: This is deprecated. Use KernelManager instead.
+    """
 
     @staticmethod
     def create_kernel() -> Optional["Kernel"]:
@@ -421,118 +554,6 @@ class KernelFactory:
         from semantic_kernel import Kernel
 
         return Kernel()
-
-    @staticmethod
-    async def load_tools_from_registry(kernel: "Kernel", registry_client) -> int:
-        """Load tools from external registry into the kernel."""
-        if not kernel or not registry_client:
-            return 0
-
-        try:
-            # Import registry client types
-
-            # Fetch tools from registry
-            tools = await registry_client.list_tools()
-            loaded_count = 0
-
-            for tool_def in tools:
-                try:
-                    # Convert registry tool definition to kernel-compatible function
-                    sk_function = KernelFactory._create_kernel_function_from_registry(tool_def)
-
-                    if sk_function:
-                        kernel.add_function(plugin_name="registry_tools", function=sk_function)
-                        loaded_count += 1
-                        logging.getLogger("energyai_sdk.kernel_factory").info(
-                            f"Loaded tool '{tool_def.name}' from registry"
-                        )
-
-                except Exception as e:
-                    logging.getLogger("energyai_sdk.kernel_factory").error(
-                        f"Error loading tool '{tool_def.name}': {e}"
-                    )
-
-            return loaded_count
-
-        except Exception as e:
-            logging.getLogger("energyai_sdk.kernel_factory").error(
-                f"Error loading tools from registry: {e}"
-            )
-            return 0
-
-    @staticmethod
-    def _create_kernel_function_from_registry(tool_def) -> Optional[Any]:
-        """Create a Semantic Kernel function from registry tool definition."""
-        try:
-            import json
-
-            import aiohttp
-            from semantic_kernel import kernel_function
-
-            # If tool has an endpoint URL, create a function that calls it
-            if tool_def.endpoint_url:
-
-                @kernel_function(description=tool_def.description, name=tool_def.name)
-                async def registry_tool_function(**kwargs) -> str:
-                    """Dynamically created function from registry tool."""
-                    try:
-                        async with aiohttp.ClientSession() as session:
-                            # Prepare request data
-                            request_data = kwargs
-
-                            # Add authentication if configured
-                            headers = {"Content-Type": "application/json"}
-                            if tool_def.auth_config:
-                                if "api_key" in tool_def.auth_config:
-                                    headers["Authorization"] = (
-                                        f"Bearer {tool_def.auth_config['api_key']}"
-                                    )
-                                elif "headers" in tool_def.auth_config:
-                                    headers.update(tool_def.auth_config["headers"])
-
-                            # Make HTTP request to tool endpoint
-                            async with session.post(
-                                tool_def.endpoint_url, json=request_data, headers=headers
-                            ) as response:
-                                if response.status == 200:
-                                    result = await response.json()
-                                    return json.dumps(result)
-                                else:
-                                    error_text = await response.text()
-                                    return json.dumps(
-                                        {
-                                            "error": f"Tool request failed with status {response.status}",
-                                            "details": error_text,
-                                        }
-                                    )
-
-                    except Exception as e:
-                        return json.dumps({"error": f"Failed to execute registry tool: {str(e)}"})
-
-                return registry_tool_function
-
-            else:
-                # For tools without endpoints, create a placeholder function
-                @kernel_function(
-                    description=f"{tool_def.description} (Registry tool without endpoint)",
-                    name=tool_def.name,
-                )
-                async def placeholder_tool(**kwargs) -> str:
-                    return json.dumps(
-                        {
-                            "message": f"Tool '{tool_def.name}' is defined in registry but has no executable endpoint",
-                            "tool_id": tool_def.id,
-                            "parameters_received": kwargs,
-                        }
-                    )
-
-                return placeholder_tool
-
-        except Exception as e:
-            logging.getLogger("energyai_sdk.kernel_factory").error(
-                f"Error creating kernel function for tool '{tool_def.name}': {e}"
-            )
-            return None
 
     @staticmethod
     def configure_azure_openai_service(
@@ -609,8 +630,8 @@ def initialize_sdk(
     logger = logging.getLogger("energyai_sdk")
     logger.info(f"Initializing EnergyAI SDK with log level: {log_level}")
 
-    # Configure observability
-    observability_config = ObservabilityConfig(
+    # Configure monitoring
+    monitoring_config = MonitoringConfig(
         environment=environment,
         enable_langfuse=bool(langfuse_public_key and langfuse_secret_key),
         langfuse_public_key=langfuse_public_key,
@@ -620,8 +641,8 @@ def initialize_sdk(
         azure_monitor_connection_string=azure_monitor_connection_string,
     )
 
-    # Initialize the observability manager
-    initialize_observability(observability_config)
+    # Initialize the monitoring client
+    initialize_monitoring(monitoring_config)
 
     logger.info("EnergyAI SDK initialized successfully")
 
@@ -634,4 +655,7 @@ agent_registry = AgentRegistry()
 # Global context store
 context_store = ContextStore()
 
-# Note: The global telemetry_manager has been replaced by get_observability_manager() from observability.py
+# Global kernel manager
+kernel_manager = KernelManager()
+
+# Note: The global telemetry_manager has been replaced by get_monitoring_client() from clients/monitoring.py

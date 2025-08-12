@@ -31,6 +31,7 @@ from .core import (  # Data Models; Base Classes; Registry System; Context Manag
     ContextStore,
     CoreAgent,
     KernelFactory,
+    KernelManager,
     PlannerDefinition,
     PromptTemplate,
     SkillDefinition,
@@ -38,6 +39,7 @@ from .core import (  # Data Models; Base Classes; Registry System; Context Manag
     agent_registry,  # Global instance
     context_store,  # Global instance
     initialize_sdk,
+    kernel_manager,  # Global instance
     monitor,
 )
 from .decorators import (  # Primary Decorators; Agent Decorators - Your Main Vision!; Utility Functions
@@ -99,6 +101,15 @@ from .exceptions import (  # Base Exceptions; Agent Exceptions; Registry Excepti
     is_retryable_error,
 )
 
+# Kernel Factory module
+try:
+    from .kernel_factory import KernelFactory as NewKernelFactory
+
+    # Make the new KernelFactory available as well
+    _KERNEL_FACTORY_AVAILABLE = True
+except ImportError:
+    _KERNEL_FACTORY_AVAILABLE = False
+
 # ==============================================================================
 # DECORATORS - ALL Component Registration in One Place
 # ==============================================================================
@@ -124,17 +135,20 @@ try:
 except ImportError:
     _AGENTS_AVAILABLE = False
 
-# Observability - Unified monitoring and telemetry
+# Monitoring - Unified monitoring and observability
 try:
-    from .observability import (
-        ObservabilityManager,
-        get_observability_manager,
-        initialize_observability,
+    from .clients.monitoring import (
+        MonitoringClient,
+        MonitoringConfig,
+        get_monitoring_client,
+        initialize_monitoring,
+        monitor_agent_execution,
+        monitor_tool_execution,
     )
 
-    _OBSERVABILITY_AVAILABLE = True
+    _MONITORING_AVAILABLE = True
 except ImportError:
-    _OBSERVABILITY_AVAILABLE = False
+    _MONITORING_AVAILABLE = False
 
 # Application module - depends on FastAPI
 try:
@@ -158,15 +172,17 @@ except ImportError:
 
 # Clients module - external service integrations
 try:
-    from .clients import ContextStoreClient
+    from .clients import AgentDefinition, ContextStoreClient, RegistryClient, ToolDefinition
 
     _CLIENTS_AVAILABLE = True
 except ImportError:
     _CLIENTS_AVAILABLE = False
 
-# Langfuse monitoring client - optional dependency
+# Legacy compatibility - these are now part of the unified MonitoringClient
 try:
-    from .clients import LangfuseMonitoringClient, configure_langfuse, get_langfuse_client
+    from .clients.monitoring import (
+        MonitoringClient as LangfuseMonitoringClient,  # For backward compatibility
+    )
 
     _LANGFUSE_AVAILABLE = True
 except ImportError:
@@ -235,15 +251,15 @@ __all__ = [
     # Registry
     "AgentRegistry",
     "agent_registry",
-    # Telemetry
-    "TelemetryManager",
-    "telemetry_manager",
+    # Monitoring (unified system)
     "monitor",
     # Context
     "ContextStore",
     "context_store",
-    # Kernel Factory
+    # Kernel Factory and Manager
     "KernelFactory",
+    "KernelManager",
+    "kernel_manager",
     # Initialization
     "initialize_sdk",
     "get_available_features",
@@ -336,24 +352,28 @@ if _CLIENTS_AVAILABLE:
     __all__.extend(
         [
             "ContextStoreClient",
+            "RegistryClient",
+            "AgentDefinition",
+            "ToolDefinition",
         ]
     )
 
 if _LANGFUSE_AVAILABLE:
     __all__.extend(
         [
-            "LangfuseMonitoringClient",
-            "get_langfuse_client",
-            "configure_langfuse",
+            "LangfuseMonitoringClient",  # Backward compatibility alias
         ]
     )
 
-if _OBSERVABILITY_AVAILABLE:
+if _MONITORING_AVAILABLE:
     __all__.extend(
         [
-            "ObservabilityManager",
-            "get_observability_manager",
-            "initialize_observability",
+            "MonitoringClient",
+            "MonitoringConfig",
+            "get_monitoring_client",
+            "initialize_monitoring",
+            "monitor_agent_execution",
+            "monitor_tool_execution",
         ]
     )
 
@@ -446,7 +466,7 @@ __package_info__ = {
     "author": __author__,
     "license": __license__,
     "features": get_available_features(),
-    "core_components": ["agent_registry", "telemetry_manager", "context_store"],
+    "core_components": ["agent_registry", "kernel_manager", "context_store"],
     "optional_components": [
         "agents" if _AGENTS_AVAILABLE else None,
         "application" if _APPLICATION_AVAILABLE else None,
@@ -478,7 +498,7 @@ def _initialize_package():
     if not hasattr(agent_registry, "_initialized"):
         agent_registry._initialized = True
 
-    # Observability initialization is handled by ObservabilityManager
+    # Initialization is now handled by the MonitoringClient
 
     if not hasattr(context_store, "_initialized"):
         context_store._initialized = True
@@ -491,7 +511,22 @@ _initialize_package()
 # CONVENIENCE FUNCTIONS
 # ==============================================================================
 
-# get_available_features is defined earlier in the file
+
+def get_available_features() -> dict:
+    """Get dictionary of available features and their status."""
+    return {
+        "core": _AGENTS_AVAILABLE,  # Core functionality same as agents
+        "agents": _AGENTS_AVAILABLE,
+        "application": _APPLICATION_AVAILABLE,
+        "clients": _CLIENTS_AVAILABLE,
+        "cosmos_db": _CLIENTS_AVAILABLE,  # Same as clients
+        "langfuse": _LANGFUSE_AVAILABLE,
+        "middleware": _MIDDLEWARE_AVAILABLE,
+        "config": _CONFIG_AVAILABLE,
+        "monitoring": _MONITORING_AVAILABLE,  # Unified monitoring and observability
+        "semantic_kernel": _AGENTS_AVAILABLE,  # Core includes SK
+        "fastapi": _APPLICATION_AVAILABLE,  # Application includes FastAPI
+    }
 
 
 def quick_start(log_level: str = "INFO", enable_telemetry: bool = False, **telemetry_config):
@@ -501,14 +536,14 @@ def quick_start(log_level: str = "INFO", enable_telemetry: bool = False, **telem
     else:
         initialize_sdk(log_level=log_level)
 
-    # Get observability manager if available
-    observability = None
-    if _OBSERVABILITY_AVAILABLE:
-        observability = get_observability_manager()
+    # Get monitoring client if available
+    monitoring = None
+    if _MONITORING_AVAILABLE:
+        monitoring = get_monitoring_client()
 
     return {
         "registry": agent_registry,
-        "observability": observability,
+        "monitoring": monitoring,
         "context": context_store,
         "features": get_available_features(),
     }
