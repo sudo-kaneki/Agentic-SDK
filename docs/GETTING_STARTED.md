@@ -457,6 +457,102 @@ python scripts/deploy.py build
 python scripts/deploy.py upload
 ```
 
+## 🔭 Unified Observability System
+
+EnergyAI SDK provides a comprehensive unified observability system that integrates:
+
+1. **Langfuse** for LLM-specific observability (traces, generations, spans)
+2. **OpenTelemetry** for general application monitoring (metrics, traces, logs)
+3. **Azure Monitor** integration for cloud deployments
+
+### 1. Enable Observability
+
+```python
+from energyai_sdk import initialize_sdk
+
+# Enable observability during SDK initialization
+initialize_sdk(
+    langfuse_public_key="your_langfuse_public_key",
+    langfuse_secret_key="your_langfuse_secret_key",
+    azure_monitor_connection_string="your_connection_string",
+    environment="production"  # or "development", "staging"
+)
+```
+
+### 2. Monitor Functions and Methods
+
+```python
+from energyai_sdk import monitor
+
+@monitor("energy_calculation")
+def calculate_energy_metrics(data):
+    # Your calculation logic
+    return result
+```
+
+### 3. Advanced Observability
+
+```python
+from energyai_sdk import get_observability_manager
+
+# Get the global observability manager
+observability = get_observability_manager()
+
+# Create a trace for a user session
+trace = observability.create_trace(
+    name="user-session",
+    user_id="user123",
+    session_id="session456",
+    metadata={"source": "web_app"}
+)
+
+# Create a generation for an LLM call
+generation = observability.create_generation(
+    trace,
+    name="energy-advice-generation",
+    input_data={"query": "How can I reduce my energy bill?"},
+    model="gpt-4",
+    model_parameters={"temperature": 0.7}
+)
+
+# End the generation with the result
+observability.end_generation(
+    generation,
+    output="Here are 5 ways to reduce your energy bill...",
+    usage={"prompt_tokens": 150, "completion_tokens": 200, "total_tokens": 350}
+)
+
+# Use spans for general operations
+with observability.start_span("data_processing", source="sensor_data"):
+    # Process data
+    processed_data = process_data(raw_data)
+
+# Update the trace with final results
+observability.update_trace(
+    trace,
+    metadata={"processing_complete": True}
+)
+
+# Flush telemetry data
+observability.flush()
+```
+
+### 4. Application Integration
+
+```python
+from energyai_sdk.application import create_application
+
+# Create application with unified observability
+app = create_application(
+    enable_observability=True,
+    enable_langfuse_monitoring=True,
+    langfuse_public_key="your_langfuse_public_key",
+    langfuse_secret_key="your_langfuse_secret_key",
+    azure_monitor_connection_string="your_connection_string",
+    langfuse_environment="production"
+)
+```
+
 ### 💡 Pro Tips
 
 1. **Start Simple**: Begin with basic tools and agents, then add complexity
@@ -464,6 +560,7 @@ python scripts/deploy.py upload
 3. **Use Skills**: Group related tools into skills for better organization
 4. **Monitor Performance**: Use `@monitor` decorator for important functions
 5. **Handle Errors**: Wrap AI calls in try/catch blocks during development
+6. **Enable Observability**: Use the unified observability system for production applications
 
 ### 🆘 Troubleshooting
 

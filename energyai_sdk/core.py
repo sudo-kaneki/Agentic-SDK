@@ -1,11 +1,9 @@
 # Core components for the EnergyAI SDK
 
-import asyncio
 import logging
 import time
 import uuid
 from abc import ABC, abstractmethod
-from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
@@ -17,6 +15,11 @@ try:
     SEMANTIC_KERNEL_AVAILABLE = True
 except ImportError:
     SEMANTIC_KERNEL_AVAILABLE = False
+
+from .config import ObservabilityConfig
+
+# Import observability manager
+from .observability import initialize_observability
 
 # Data models
 
@@ -323,123 +326,18 @@ class AgentRegistry:
 # Telemetry
 
 
-class TelemetryManager:
-    """Manager for telemetry and observability."""
-
-    def __init__(self):
-        self.azure_tracer = None
-        self.langfuse_client = None
-        self.logger = logging.getLogger("energyai_sdk.telemetry")
-        self.operations = defaultdict(list)
-
-    def configure_azure_monitor(self, connection_string: str):
-        """Configure Azure Monitor telemetry."""
-        try:
-            from opentelemetry import trace
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-            from opentelemetry.sdk.trace import TracerProvider
-            from opentelemetry.sdk.trace.export import BatchSpanProcessor
-
-            trace.set_tracer_provider(TracerProvider())
-            tracer = trace.get_tracer(__name__)
-
-            otlp_exporter = OTLPSpanExporter(endpoint=connection_string)
-            span_processor = BatchSpanProcessor(otlp_exporter)
-            trace.get_tracer_provider().add_span_processor(span_processor)
-
-            self.azure_tracer = tracer
-            self.logger.info("Azure Monitor telemetry configured")
-
-        except ImportError:
-            self.logger.warning("OpenTelemetry not available for Azure Monitor")
-        except Exception as e:
-            self.logger.error(f"Failed to configure Azure Monitor: {e}")
-
-    def configure_langfuse(
-        self, public_key: str, secret_key: str, host: str = "https://cloud.langfuse.com"
-    ):
-        """Configure Langfuse telemetry."""
-        try:
-            from langfuse import Langfuse
-
-            self.langfuse_client = Langfuse(public_key=public_key, secret_key=secret_key, host=host)
-            self.logger.info("Langfuse telemetry configured")
-
-        except ImportError:
-            self.logger.warning("Langfuse client not available")
-        except Exception as e:
-            self.logger.error(f"Failed to configure Langfuse: {e}")
-
-    def trace_operation(self, operation_name: str, metadata: dict[str, Any] = None):
-        """Context manager for tracing operations."""
-        return TelemetryContext(self, operation_name, metadata or {})
-
-
-class TelemetryContext:
-    """Context manager for telemetry operations."""
-
-    def __init__(self, manager: TelemetryManager, operation_name: str, metadata: dict[str, Any]):
-        self.manager = manager
-        self.operation_name = operation_name
-        self.metadata = metadata
-        self.start_time = None
-        self.trace_id = None
-
-    def __enter__(self):
-        self.start_time = time.time()
-        self.trace_id = str(uuid.uuid4())
-
-        # Record operation start
-        operation_data = {
-            "trace_id": self.trace_id,
-            "start_time": self.start_time,
-            "metadata": self.metadata,
-        }
-        self.manager.operations[self.operation_name].append(operation_data)
-
-        return self.trace_id
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        end_time = time.time()
-        duration = end_time - self.start_time
-
-        # Update operation record
-        for op in self.manager.operations[self.operation_name]:
-            if op["trace_id"] == self.trace_id:
-                op.update(
-                    {
-                        "end_time": end_time,
-                        "duration_ms": int(duration * 1000),
-                        "success": exc_type is None,
-                        "error": str(exc_val) if exc_val else None,
-                    }
-                )
-                break
+# Telemetry and monitoring functionality has been moved to observability.py
 
 
 # Monitoring decorator
-
-
+# This is kept for backward compatibility but now delegates to observability.py
 def monitor(operation_name: str):
     """Decorator for monitoring function execution."""
 
-    def decorator(func):
-        if asyncio.iscoroutinefunction(func):
+    # Import here to avoid circular imports
+    from .observability import monitor as observability_monitor
 
-            async def async_wrapper(*args, **kwargs):
-                with telemetry_manager.trace_operation(operation_name):
-                    return await func(*args, **kwargs)
-
-            return async_wrapper
-        else:
-
-            def sync_wrapper(*args, **kwargs):
-                with telemetry_manager.trace_operation(operation_name):
-                    return func(*args, **kwargs)
-
-            return sync_wrapper
-
-    return decorator
+    return observability_monitor(operation_name)
 
 
 # Context store
@@ -698,6 +596,7 @@ def initialize_sdk(
     langfuse_public_key: Optional[str] = None,
     langfuse_secret_key: Optional[str] = None,
     langfuse_host: str = "https://cloud.langfuse.com",
+    environment: str = "production",
 ):
     """Initialize the EnergyAI SDK."""
 
@@ -710,14 +609,19 @@ def initialize_sdk(
     logger = logging.getLogger("energyai_sdk")
     logger.info(f"Initializing EnergyAI SDK with log level: {log_level}")
 
-    # Configure telemetry
-    if azure_monitor_connection_string:
-        telemetry_manager.configure_azure_monitor(azure_monitor_connection_string)
+    # Configure observability
+    observability_config = ObservabilityConfig(
+        environment=environment,
+        enable_langfuse=bool(langfuse_public_key and langfuse_secret_key),
+        langfuse_public_key=langfuse_public_key,
+        langfuse_secret_key=langfuse_secret_key,
+        langfuse_host=langfuse_host,
+        enable_opentelemetry=bool(azure_monitor_connection_string),
+        azure_monitor_connection_string=azure_monitor_connection_string,
+    )
 
-    if langfuse_public_key and langfuse_secret_key:
-        telemetry_manager.configure_langfuse(
-            langfuse_public_key, langfuse_secret_key, langfuse_host
-        )
+    # Initialize the observability manager
+    initialize_observability(observability_config)
 
     logger.info("EnergyAI SDK initialized successfully")
 
@@ -727,8 +631,7 @@ def initialize_sdk(
 # Global registry instance
 agent_registry = AgentRegistry()
 
-# Global telemetry manager
-telemetry_manager = TelemetryManager()
-
 # Global context store
 context_store = ContextStore()
+
+# Note: The global telemetry_manager has been replaced by get_observability_manager() from observability.py

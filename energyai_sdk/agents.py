@@ -220,13 +220,3 @@ def get_agent(name):
 
 def list_agents():
     return agent_registry.list_agents()
-
-
-# Import agent decorator functions from decorators module
-
-# Example usage
-
-if __name__ == "__main__":
-    print("✅ Simple Semantic Kernel implementation loaded!")
-    print("Decorators are in decorators.py")
-    print("Use bootstrap_agents(config) to create agents from decorators.")

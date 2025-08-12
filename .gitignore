@@ -1,26 +1,106 @@
 # Virtual environments
 .venv/
+.env/
+venv/
+env/
 
 # Python cache files
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+*.so
+*.dll
 
 # Build artifacts
 build/
 dist/
 *.egg-info/
+*.egg
+.eggs/
 
-# Testing and type checking
+# Testing and coverage
 .pytest_cache/
 .mypy_cache/
+.tox/
+.nox/
 .coverage
+.coverage.*
+htmlcov/
+.cache
+coverage.xml
+*.cover
+.hypothesis/
+
+# Environment files
+.env
+.env.*
+!.env.example
 
 # IDE and OS files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
-# Logs
+# Logs and debug files
 *.log
-# EnergyAI SDK contributors will be updated periodically
+logs/
+debug.log
+error.log
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# AI/ML specific
+models/
+*.model
+*.pkl
+*.pickle
+checkpoints/
+wandb/
+mlruns/
+
+# Azure and cloud credentials
+.azure/
+azure.json
+credentials.json
+service-account.json
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.orig
+
+# Documentation build
+docs/_build/
+docs/build/
+site/
+
+# Package manager lock files (keep requirements.txt but ignore lock files)
+Pipfile.lock
+poetry.lock
+
+# EnergyAI SDK - Context Store and Session Data
+sessions/
+context_cache/
+agent_logs/
+
+# Development and debugging
+.debug/
+debug/
+profiling/

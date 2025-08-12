@@ -13,11 +13,7 @@ from energyai_sdk.application import (
     create_application,
     create_production_application,
 )
-from energyai_sdk.clients import (
-    MockContextStoreClient,
-    MockMonitoringClient,
-    MockRegistryClient,
-)
+from energyai_sdk.clients import MockContextStoreClient, MockMonitoringClient, MockRegistryClient
 from energyai_sdk.core import AgentRequest, AgentResponse, CoreAgent
 
 

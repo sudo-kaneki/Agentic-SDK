@@ -24,7 +24,7 @@ __license__ = "MIT"
 # CORE IMPORTS - Registry, Context, and Base Classes
 # ==============================================================================
 
-from .core import (  # Data Models; Base Classes; Registry System; Telemetry; Context Management; Kernel Factory; SDK Initialization
+from .core import (  # Data Models; Base Classes; Registry System; Context Management; Kernel Factory; SDK Initialization
     AgentRegistry,
     AgentRequest,
     AgentResponse,
@@ -34,13 +34,11 @@ from .core import (  # Data Models; Base Classes; Registry System; Telemetry; Co
     PlannerDefinition,
     PromptTemplate,
     SkillDefinition,
-    TelemetryManager,
     ToolDefinition,
     agent_registry,  # Global instance
     context_store,  # Global instance
     initialize_sdk,
     monitor,
-    telemetry_manager,  # Global instance
 )
 from .decorators import (  # Primary Decorators; Agent Decorators - Your Main Vision!; Utility Functions
     agent,
@@ -126,6 +124,18 @@ try:
 except ImportError:
     _AGENTS_AVAILABLE = False
 
+# Observability - Unified monitoring and telemetry
+try:
+    from .observability import (
+        ObservabilityManager,
+        get_observability_manager,
+        initialize_observability,
+    )
+
+    _OBSERVABILITY_AVAILABLE = True
+except ImportError:
+    _OBSERVABILITY_AVAILABLE = False
+
 # Application module - depends on FastAPI
 try:
     from .application import (  # Core Application; API Models; Application Factory; Development Server
@@ -145,6 +155,22 @@ try:
     _APPLICATION_AVAILABLE = True
 except ImportError:
     _APPLICATION_AVAILABLE = False
+
+# Clients module - external service integrations
+try:
+    from .clients import ContextStoreClient
+
+    _CLIENTS_AVAILABLE = True
+except ImportError:
+    _CLIENTS_AVAILABLE = False
+
+# Langfuse monitoring client - optional dependency
+try:
+    from .clients import LangfuseMonitoringClient, configure_langfuse, get_langfuse_client
+
+    _LANGFUSE_AVAILABLE = True
+except ImportError:
+    _LANGFUSE_AVAILABLE = False
 
 # Middleware module
 try:
@@ -220,6 +246,8 @@ __all__ = [
     "KernelFactory",
     # Initialization
     "initialize_sdk",
+    "get_available_features",
+    "quick_start",
     # Decorators
     "tool",
     "skill",
@@ -304,6 +332,31 @@ if _APPLICATION_AVAILABLE:
         ]
     )
 
+if _CLIENTS_AVAILABLE:
+    __all__.extend(
+        [
+            "ContextStoreClient",
+        ]
+    )
+
+if _LANGFUSE_AVAILABLE:
+    __all__.extend(
+        [
+            "LangfuseMonitoringClient",
+            "get_langfuse_client",
+            "configure_langfuse",
+        ]
+    )
+
+if _OBSERVABILITY_AVAILABLE:
+    __all__.extend(
+        [
+            "ObservabilityManager",
+            "get_observability_manager",
+            "initialize_observability",
+        ]
+    )
+
 if _MIDDLEWARE_AVAILABLE:
     __all__.extend(
         [
@@ -350,10 +403,12 @@ def get_available_features() -> dict:
         "core": True,  # Always available
         "agents": _AGENTS_AVAILABLE,
         "application": _APPLICATION_AVAILABLE,
+        "clients": _CLIENTS_AVAILABLE,
         "middleware": _MIDDLEWARE_AVAILABLE,
         "config": _CONFIG_AVAILABLE,
         "semantic_kernel": _AGENTS_AVAILABLE,  # Same as agents
         "fastapi": _APPLICATION_AVAILABLE,  # Same as application
+        "cosmos_db": _CLIENTS_AVAILABLE,  # Same as clients
     }
 
 
@@ -395,6 +450,7 @@ __package_info__ = {
     "optional_components": [
         "agents" if _AGENTS_AVAILABLE else None,
         "application" if _APPLICATION_AVAILABLE else None,
+        "clients" if _CLIENTS_AVAILABLE else None,
         "middleware" if _MIDDLEWARE_AVAILABLE else None,
         "config" if _CONFIG_AVAILABLE else None,
     ],
@@ -422,8 +478,7 @@ def _initialize_package():
     if not hasattr(agent_registry, "_initialized"):
         agent_registry._initialized = True
 
-    if not hasattr(telemetry_manager, "_initialized"):
-        telemetry_manager._initialized = True
+    # Observability initialization is handled by ObservabilityManager
 
     if not hasattr(context_store, "_initialized"):
         context_store._initialized = True
@@ -436,6 +491,8 @@ _initialize_package()
 # CONVENIENCE FUNCTIONS
 # ==============================================================================
 
+# get_available_features is defined earlier in the file
+
 
 def quick_start(log_level: str = "INFO", enable_telemetry: bool = False, **telemetry_config):
     """Quick start function for basic SDK setup."""
@@ -444,9 +501,14 @@ def quick_start(log_level: str = "INFO", enable_telemetry: bool = False, **telem
     else:
         initialize_sdk(log_level=log_level)
 
+    # Get observability manager if available
+    observability = None
+    if _OBSERVABILITY_AVAILABLE:
+        observability = get_observability_manager()
+
     return {
         "registry": agent_registry,
-        "telemetry": telemetry_manager if enable_telemetry else None,
+        "observability": observability,
         "context": context_store,
         "features": get_available_features(),
     }
