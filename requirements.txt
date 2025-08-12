@@ -1,0 +1,28 @@
+# EnergyAI SDK - Core Dependencies
+# Base requirements for the SDK to function
+
+# Core Semantic Kernel integration
+semantic-kernel
+
+# Optional web framework support (for application.py)
+fastapi
+uvicorn
+pydantic
+
+# Optional telemetry and monitoring
+opentelemetry-api
+opentelemetry-sdk
+langfuse
+
+# Development and testing (optional)
+pytest
+pytest-asyncio
+pytest-mock
+pre-commit
+
+# Configuration and utilities
+pyyaml
+python-dotenv
+
+# Type hints and development
+typing-extensions

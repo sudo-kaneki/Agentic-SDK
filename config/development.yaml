@@ -1,0 +1,90 @@
+# EnergyAI SDK - Development Configuration
+# This configuration is optimized for local development
+
+# =============================================================================
+# AI MODEL CONFIGURATION
+# =============================================================================
+azure_openai:
+  endpoint: "https://your-dev-resource.openai.azure.com/"
+  api_key: "your-dev-api-key"
+  deployment_name: "gpt-4o"
+  api_version: "2024-02-01"
+
+# Alternative OpenAI configuration
+# openai:
+#   api_key: "your-openai-key"
+#   model: "gpt-4"
+
+# =============================================================================
+# APPLICATION SETTINGS
+# =============================================================================
+application:
+  title: "EnergyAI Development Platform"
+  version: "1.0.0-dev"
+  description: "Development environment for EnergyAI SDK"
+  debug: true
+  host: "127.0.0.1"
+  port: 8000
+  reload: true
+
+# =============================================================================
+# LOGGING CONFIGURATION
+# =============================================================================
+logging:
+  level: "DEBUG"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  enable_file_logging: true
+  log_file: "logs/energyai_dev.log"
+
+# =============================================================================
+# TELEMETRY (Optional in development)
+# =============================================================================
+telemetry:
+  enabled: false
+  langfuse:
+    public_key: "pk_lf_dev_key"
+    secret_key: "sk_lf_dev_secret"
+    host: "https://cloud.langfuse.com"
+  azure_monitor:
+    connection_string: ""  # Leave empty for dev
+
+# =============================================================================
+# SECURITY SETTINGS
+# =============================================================================
+security:
+  enable_cors: true
+  cors_origins:
+    - "http://localhost:3000"
+    - "http://localhost:8080"
+    - "http://127.0.0.1:3000"
+  api_key_required: false
+  rate_limiting:
+    enabled: false
+    requests_per_minute: 1000
+
+# =============================================================================
+# CACHE CONFIGURATION
+# =============================================================================
+cache:
+  enabled: true
+  ttl_seconds: 300
+  max_size: 1000
+
+# =============================================================================
+# DEVELOPMENT-SPECIFIC SETTINGS
+# =============================================================================
+development:
+  auto_reload: true
+  enable_profiling: true
+  mock_external_apis: false
+  verbose_errors: true
+  enable_test_endpoints: true
+
+# =============================================================================
+# AGENT CONFIGURATION
+# =============================================================================
+agents:
+  default_temperature: 0.7
+  default_max_tokens: 1000
+  enable_streaming: true
+  timeout_seconds: 30

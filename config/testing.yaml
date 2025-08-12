@@ -1,0 +1,107 @@
+# EnergyAI SDK - Testing Configuration
+# This configuration is optimized for running tests
+
+# =============================================================================
+# AI MODEL CONFIGURATION (MOCKED FOR TESTING)
+# =============================================================================
+azure_openai:
+  endpoint: "https://mock-openai.test.com/"
+  api_key: "mock-api-key-for-testing"
+  deployment_name: "gpt-4o-test"
+  api_version: "2024-02-01"
+
+# =============================================================================
+# APPLICATION SETTINGS
+# =============================================================================
+application:
+  title: "EnergyAI Test Platform"
+  version: "1.0.0-test"
+  description: "Testing environment for EnergyAI SDK"
+  debug: true
+  host: "127.0.0.1"
+  port: 8001  # Different port to avoid conflicts
+  reload: false
+
+# =============================================================================
+# LOGGING CONFIGURATION
+# =============================================================================
+logging:
+  level: "DEBUG"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  enable_file_logging: false  # Don't create log files during tests
+  console_only: true
+
+# =============================================================================
+# TELEMETRY (DISABLED FOR TESTING)
+# =============================================================================
+telemetry:
+  enabled: false
+  langfuse:
+    public_key: "test-public-key"
+    secret_key: "test-secret-key"
+    host: "https://mock-langfuse.test.com"
+  azure_monitor:
+    connection_string: ""
+
+# =============================================================================
+# SECURITY SETTINGS (RELAXED FOR TESTING)
+# =============================================================================
+security:
+  enable_cors: true
+  cors_origins:
+    - "*"  # Allow all origins in tests
+  api_key_required: false
+  rate_limiting:
+    enabled: false
+
+# =============================================================================
+# CACHE CONFIGURATION
+# =============================================================================
+cache:
+  enabled: false  # Disable caching in tests for predictable results
+  ttl_seconds: 1
+  max_size: 10
+
+# =============================================================================
+# TESTING-SPECIFIC SETTINGS
+# =============================================================================
+testing:
+  mock_external_apis: true
+  enable_test_endpoints: true
+  fast_startup: true
+  skip_migrations: true
+  use_in_memory_storage: true
+  cleanup_after_tests: true
+
+# =============================================================================
+# AGENT CONFIGURATION (OPTIMIZED FOR TESTING)
+# =============================================================================
+agents:
+  default_temperature: 0.0  # Deterministic for testing
+  default_max_tokens: 100   # Shorter responses in tests
+  enable_streaming: false   # Simpler testing without streaming
+  timeout_seconds: 5        # Quick timeouts for tests
+
+# =============================================================================
+# TEST DATA
+# =============================================================================
+test_data:
+  sample_energy_projects:
+    solar_farm:
+      capacity_mw: 100
+      annual_generation_mwh: 250000
+      capex: 150000000
+      location: "California"
+    wind_farm:
+      capacity_mw: 150
+      annual_generation_mwh: 450000
+      capex: 225000000
+      location: "Texas"
+
+  sample_calculations:
+    lcoe_targets:
+      solar: 45.0  # $/MWh
+      wind: 35.0   # $/MWh
+    capacity_factor_benchmarks:
+      solar: 0.25
+      wind: 0.35

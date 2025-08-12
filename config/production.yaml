@@ -1,0 +1,99 @@
+# EnergyAI SDK - Production Configuration
+# This configuration is optimized for production deployment
+
+# =============================================================================
+# AI MODEL CONFIGURATION
+# =============================================================================
+azure_openai:
+  endpoint: "${AZURE_OPENAI_ENDPOINT}"
+  api_key: "${AZURE_OPENAI_API_KEY}"
+  deployment_name: "${AZURE_OPENAI_DEPLOYMENT_NAME}"
+  api_version: "2024-02-01"
+
+# =============================================================================
+# APPLICATION SETTINGS
+# =============================================================================
+application:
+  title: "EnergyAI Production Platform"
+  version: "1.0.0"
+  description: "AI agent platform for energy analytics and management"
+  debug: false
+  host: "0.0.0.0"
+  port: 8000
+  reload: false
+
+# =============================================================================
+# LOGGING CONFIGURATION
+# =============================================================================
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  enable_file_logging: true
+  log_file: "/var/log/energyai/app.log"
+  max_log_size_mb: 100
+  backup_count: 10
+
+# =============================================================================
+# TELEMETRY & MONITORING
+# =============================================================================
+telemetry:
+  enabled: true
+  langfuse:
+    public_key: "${LANGFUSE_PUBLIC_KEY}"
+    secret_key: "${LANGFUSE_SECRET_KEY}"
+    host: "${LANGFUSE_HOST:-https://cloud.langfuse.com}"
+  azure_monitor:
+    connection_string: "${AZURE_MONITOR_CONNECTION_STRING}"
+
+# =============================================================================
+# SECURITY SETTINGS
+# =============================================================================
+security:
+  enable_cors: true
+  cors_origins:
+    - "https://your-frontend-domain.com"
+    - "https://app.your-company.com"
+  api_key_required: true
+  api_key_header: "X-API-Key"
+  rate_limiting:
+    enabled: true
+    requests_per_minute: 100
+    burst_limit: 200
+
+# =============================================================================
+# CACHE CONFIGURATION
+# =============================================================================
+cache:
+  enabled: true
+  ttl_seconds: 600
+  max_size: 10000
+
+# =============================================================================
+# PRODUCTION-SPECIFIC SETTINGS
+# =============================================================================
+production:
+  health_check_interval: 30
+  graceful_shutdown_timeout: 30
+  worker_processes: 4
+  max_connections: 1000
+  enable_metrics: true
+  metrics_port: 9090
+
+# =============================================================================
+# AGENT CONFIGURATION
+# =============================================================================
+agents:
+  default_temperature: 0.3
+  default_max_tokens: 1500
+  enable_streaming: true
+  timeout_seconds: 60
+  max_concurrent_requests: 100
+
+# =============================================================================
+# DATABASE (if needed for future features)
+# =============================================================================
+database:
+  url: "${DATABASE_URL}"
+  pool_size: 20
+  max_overflow: 30
+  pool_timeout: 30
