@@ -512,7 +512,7 @@ class ContextStore:
 
 
 class KernelFactory:
-    """Factory for creating Semantic Kernel instances."""
+    """Factory for creating Semantic Kernel instances with dynamic tool loading."""
 
     @staticmethod
     def create_kernel() -> Optional["Kernel"]:
@@ -523,6 +523,118 @@ class KernelFactory:
         from semantic_kernel import Kernel
 
         return Kernel()
+
+    @staticmethod
+    async def load_tools_from_registry(kernel: "Kernel", registry_client) -> int:
+        """Load tools from external registry into the kernel."""
+        if not kernel or not registry_client:
+            return 0
+
+        try:
+            # Import registry client types
+
+            # Fetch tools from registry
+            tools = await registry_client.list_tools()
+            loaded_count = 0
+
+            for tool_def in tools:
+                try:
+                    # Convert registry tool definition to kernel-compatible function
+                    sk_function = KernelFactory._create_kernel_function_from_registry(tool_def)
+
+                    if sk_function:
+                        kernel.add_function(plugin_name="registry_tools", function=sk_function)
+                        loaded_count += 1
+                        logging.getLogger("energyai_sdk.kernel_factory").info(
+                            f"Loaded tool '{tool_def.name}' from registry"
+                        )
+
+                except Exception as e:
+                    logging.getLogger("energyai_sdk.kernel_factory").error(
+                        f"Error loading tool '{tool_def.name}': {e}"
+                    )
+
+            return loaded_count
+
+        except Exception as e:
+            logging.getLogger("energyai_sdk.kernel_factory").error(
+                f"Error loading tools from registry: {e}"
+            )
+            return 0
+
+    @staticmethod
+    def _create_kernel_function_from_registry(tool_def) -> Optional[Any]:
+        """Create a Semantic Kernel function from registry tool definition."""
+        try:
+            import json
+
+            import aiohttp
+            from semantic_kernel import kernel_function
+
+            # If tool has an endpoint URL, create a function that calls it
+            if tool_def.endpoint_url:
+
+                @kernel_function(description=tool_def.description, name=tool_def.name)
+                async def registry_tool_function(**kwargs) -> str:
+                    """Dynamically created function from registry tool."""
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            # Prepare request data
+                            request_data = kwargs
+
+                            # Add authentication if configured
+                            headers = {"Content-Type": "application/json"}
+                            if tool_def.auth_config:
+                                if "api_key" in tool_def.auth_config:
+                                    headers["Authorization"] = (
+                                        f"Bearer {tool_def.auth_config['api_key']}"
+                                    )
+                                elif "headers" in tool_def.auth_config:
+                                    headers.update(tool_def.auth_config["headers"])
+
+                            # Make HTTP request to tool endpoint
+                            async with session.post(
+                                tool_def.endpoint_url, json=request_data, headers=headers
+                            ) as response:
+                                if response.status == 200:
+                                    result = await response.json()
+                                    return json.dumps(result)
+                                else:
+                                    error_text = await response.text()
+                                    return json.dumps(
+                                        {
+                                            "error": f"Tool request failed with status {response.status}",
+                                            "details": error_text,
+                                        }
+                                    )
+
+                    except Exception as e:
+                        return json.dumps({"error": f"Failed to execute registry tool: {str(e)}"})
+
+                return registry_tool_function
+
+            else:
+                # For tools without endpoints, create a placeholder function
+                @kernel_function(
+                    description=f"{tool_def.description} (Registry tool without endpoint)",
+                    name=tool_def.name,
+                )
+                async def placeholder_tool(**kwargs) -> str:
+                    return json.dumps(
+                        {
+                            "message": f"Tool '{tool_def.name}' is defined in registry but has no executable endpoint",
+                            "tool_id": tool_def.id,
+                            "parameters_received": kwargs,
+                        }
+                    )
+
+                return placeholder_tool
+
+        except Exception as e:
+            logging.getLogger("energyai_sdk.kernel_factory").error(
+                f"Error creating kernel function for tool '{tool_def.name}': {e}"
+            )
+            return None
 
     @staticmethod
     def configure_azure_openai_service(

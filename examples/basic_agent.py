@@ -18,7 +18,12 @@ from energyai_sdk.agents import bootstrap_agents
 
 # Try to import optional components
 try:
-    from energyai_sdk.application import run_development_server
+    from energyai_sdk.application import create_application, run_development_server
+    from energyai_sdk.clients import (
+        MockContextStoreClient,
+        MockMonitoringClient,
+        MockRegistryClient,
+    )
 
     APPLICATION_AVAILABLE = True
 except ImportError:
@@ -228,7 +233,7 @@ async def test_with_ai():
 
 
 def run_development_mode():
-    """Run the agent in development server mode."""
+    """Run the agent in development server mode with Azure integration demo."""
 
     if not APPLICATION_AVAILABLE:
         print("❌ Web server not available. Install FastAPI and uvicorn:")
@@ -237,6 +242,9 @@ def run_development_mode():
 
     # Initialize SDK
     initialize_sdk(log_level="DEBUG")
+
+    print("🚀 Starting Basic Agent with Azure Integration Demo")
+    print("=" * 60)
 
     # Configure Azure OpenAI
     azure_config = create_basic_agent_config()
@@ -249,19 +257,60 @@ def run_development_mode():
             print("❌ BasicAssistant not created. Check configuration.")
             return
 
-        print("🌐 Starting Basic Agent Development Server...")
+        # Create Azure service clients (using mock for demo)
+        print("🔧 Setting up Azure service integration (mock clients for demo)...")
+        registry_client = MockRegistryClient()
+        context_store_client = MockContextStoreClient()
+        monitoring_client = MockMonitoringClient()
+
+        # Create application with Azure integration
+        app = create_application(
+            title="Basic Agent with Azure Integration",
+            description="Demonstrates Azure integration features",
+            registry_client=registry_client,
+            context_store_client=context_store_client,
+            monitoring_client=monitoring_client,
+            debug=True,
+        )
+
+        # Add our agent
+        for agent in agents.values():
+            app.add_agent(agent)
+
+        print("✅ Azure integration configured:")
+        print("   📋 Registry Client: Ready (mock)")
+        print("   💾 Context Store: Ready (mock)")
+        print("   📊 Monitoring: Ready (mock)")
+
+        print("\n🌐 Starting Development Server with Azure Features...")
         print("📍 Available at: http://localhost:8000")
         print("📚 API Docs at: http://localhost:8000/docs")
-        print("🧪 Test the agent using the interactive API documentation!")
+        print("\n🆕 New Azure Integration Endpoints:")
+        print("   GET  /sessions/{session_id} - Retrieve session context")
+        print("   POST /sessions/{session_id} - Create new session")
+        print("   POST /registry/reload      - Reload from registry")
+        print("   GET  /health              - Enhanced health check")
 
-        # Run development server
-        run_development_server(
-            agents=list(agents.values()), host="127.0.0.1", port=8000, reload=True
-        )
+        print("\n🧪 Test session persistence:")
+        print("   1. Send a chat message with 'session_id' parameter")
+        print("   2. Check session context at /sessions/{session_id}")
+        print("   3. Continue conversation - context will be preserved!")
+
+        # Run development server with the enhanced app
+        if hasattr(app, "get_fastapi_app") and app.get_fastapi_app():
+            import uvicorn
+
+            uvicorn.run(app.get_fastapi_app(), host="127.0.0.1", port=8000, reload=True)
+        else:
+            # Fallback to basic server
+            run_development_server(
+                agents=list(agents.values()), host="127.0.0.1", port=8000, reload=True
+            )
 
     except Exception as e:
         print(f"❌ Error starting server: {e}")
         print("💡 Make sure your Azure OpenAI credentials are configured")
+        print("💡 For production Azure integration, see examples/production_azure_platform.py")
 
 
 def main():
