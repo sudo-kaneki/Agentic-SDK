@@ -1,518 +1,390 @@
 """
-Context Store Client for session persistence in Cosmos DB.
+Context Store Client for Azure Cosmos DB integration.
 
-This client handles loading and saving session documents based on the
-Context Store JSON Schema, enabling stateful conversations across requests.
+This module provides stateful, multi-turn conversation capabilities by connecting
+the SDK to an Azure Cosmos DB container that stores session history.
 """
 
 import logging
-from dataclasses import dataclass
+import os
+import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 try:
-    from azure.cosmos import exceptions as cosmos_exceptions
-    from azure.cosmos.aio import CosmosClient
-
-    COSMOS_AVAILABLE = True
+    from azure.cosmos import CosmosClient, exceptions
 except ImportError:
-    COSMOS_AVAILABLE = False
+    CosmosClient = None
+    exceptions = None
 
-from ..exceptions import SDKError
+# Avoid circular import - import at runtime
+# from ..config import ConfigurationManager
 
 
-@dataclass
-class SessionDocument:
-    """Session document structure for context store."""
+class SimpleConfigManager:
+    """Simple configuration manager fallback to avoid circular imports."""
 
-    session_id: str
-    subject_id: str
-    created_at: datetime
-    updated_at: datetime
-    context: Dict[str, Any]
-    metadata: Optional[Dict[str, Any]] = None
-    ttl: Optional[int] = None  # Time to live in seconds
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for Cosmos DB storage."""
+    def get_settings(self):
+        """Get settings from environment variables."""
         return {
-            "id": self.session_id,
-            "session_id": self.session_id,
-            "subject_id": self.subject_id,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat(),
-            "context": self.context,
-            "metadata": self.metadata or {},
-            "ttl": self.ttl,
+            "cosmos_endpoint": os.getenv("COSMOS_ENDPOINT") or os.getenv("AZURE_COSMOS_ENDPOINT"),
+            "cosmos_key": os.getenv("COSMOS_KEY") or os.getenv("AZURE_COSMOS_KEY"),
+            "cosmos_database": os.getenv("COSMOS_DATABASE", "AgenticPlatform"),
+            "cosmos_container": os.getenv("COSMOS_CONTAINER", "Context"),
         }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "SessionDocument":
-        """Create from Cosmos DB document."""
-        return cls(
-            session_id=data["session_id"],
-            subject_id=data["subject_id"],
-            created_at=datetime.fromisoformat(data["created_at"]),
-            updated_at=datetime.fromisoformat(data["updated_at"]),
-            context=data.get("context", {}),
-            metadata=data.get("metadata"),
-            ttl=data.get("ttl"),
-        )
 
 
 class ContextStoreClient:
     """
-    Client for the Context Store in Cosmos DB.
+    Client for managing conversation context in Azure Cosmos DB.
 
-    Handles session persistence, enabling stateful conversations by storing
-    and retrieving conversation context across agent interactions.
+    This client handles session creation, retrieval, and updates for stateful
+    conversations between users and agents.
     """
 
-    def __init__(
-        self,
-        cosmos_endpoint: str,
-        cosmos_key: str,
-        database_name: str = "energyai_platform",
-        sessions_container: str = "sessions",
-        default_ttl: int = 3600,  # 1 hour default TTL
-    ):
+    def __init__(self, config_manager: Optional[Any] = None):
         """
-        Initialize the Context Store Client.
+        Initializes the client and connects to Cosmos DB.
 
         Args:
-            cosmos_endpoint: Cosmos DB endpoint URL
-            cosmos_key: Cosmos DB primary key
-            database_name: Database name (default: energyai_platform)
-            sessions_container: Sessions container name (default: sessions)
-            default_ttl: Default time to live in seconds (default: 3600)
-        """
-        if not COSMOS_AVAILABLE:
-            raise SDKError(
-                "Azure Cosmos DB SDK not available. Install with: pip install azure-cosmos"
-            )
+            config_manager: Optional configuration manager. If not provided,
+                          will create a default one.
 
-        self.cosmos_endpoint = cosmos_endpoint
-        self.cosmos_key = cosmos_key
-        self.database_name = database_name
-        self.sessions_container = sessions_container
-        self.default_ttl = default_ttl
+        Raises:
+            ImportError: If azure-cosmos is not installed
+            Exception: If connection to Cosmos DB fails
+        """
+        if CosmosClient is None:
+            raise ImportError(
+                "azure-cosmos is required for ContextStoreClient. "
+                "Install with: pip install azure-cosmos"
+            )
 
         self.logger = logging.getLogger(__name__)
-        self._client: Optional[CosmosClient] = None
-        self._database = None
-        self._sessions_container = None
 
-    async def _get_client(self) -> CosmosClient:
-        """Get or create Cosmos DB client."""
-        if self._client is None:
-            self._client = CosmosClient(self.cosmos_endpoint, self.cosmos_key)
-            self._database = self._client.get_database_client(self.database_name)
-            self._sessions_container = self._database.get_container_client(self.sessions_container)
+        # Import ConfigurationManager at runtime to avoid circular imports
+        if config_manager is None:
+            try:
+                from ..config import ConfigurationManager
 
-        return self._client
+                self.config_manager = ConfigurationManager()
+            except ImportError:
+                # Fallback: create a simple config manager
+                self.config_manager = SimpleConfigManager()
+        else:
+            self.config_manager = config_manager
 
-    async def create_session(
-        self,
-        session_id: str,
-        subject_id: str,
-        initial_context: Optional[Dict[str, Any]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        ttl: Optional[int] = None,
-    ) -> SessionDocument:
-        """
-        Create a new session document.
-
-        Args:
-            session_id: Unique session identifier
-            subject_id: User/subject identifier
-            initial_context: Initial context data
-            metadata: Additional metadata
-            ttl: Time to live in seconds (uses default if not provided)
-
-        Returns:
-            Created SessionDocument
-        """
         try:
-            await self._get_client()
+            # Get Cosmos DB configuration
+            cosmos_config = self._get_cosmos_config()
 
-            now = datetime.now(timezone.utc)
-            session_doc = SessionDocument(
-                session_id=session_id,
-                subject_id=subject_id,
-                created_at=now,
-                updated_at=now,
-                context=initial_context or {},
-                metadata=metadata,
-                ttl=ttl or self.default_ttl,
+            # Initialize Cosmos client
+            self.client = CosmosClient(cosmos_config["endpoint"], cosmos_config["key"])
+
+            # Get database and container references
+            self.database = self.client.get_database_client(
+                cosmos_config.get("database_name", "AgenticPlatform")
+            )
+            self.container = self.database.get_container_client(
+                cosmos_config.get("container_name", "Context")
             )
 
-            # Create document in Cosmos DB
-            await self._sessions_container.create_item(body=session_doc.to_dict())
+            self.logger.info("ContextStoreClient initialized successfully")
 
-            self.logger.info(f"Created session: {session_id} for subject: {subject_id}")
-            return session_doc
-
-        except cosmos_exceptions.CosmosResourceExistsError:
-            self.logger.warning(f"Session already exists: {session_id}")
-            raise SDKError(f"Session {session_id} already exists")
         except Exception as e:
-            self.logger.error(f"Error creating session {session_id}: {e}")
-            raise SDKError(f"Failed to create session: {e}") from e
+            self.logger.error(f"Error initializing ContextStoreClient: {e}")
+            raise
 
-    async def get_session(self, session_id: str) -> Optional[SessionDocument]:
+    def _get_cosmos_config(self) -> Dict[str, str]:
         """
-        Retrieve a session document by ID.
-
-        Args:
-            session_id: Session identifier
+        Retrieves Cosmos DB configuration from the settings.
 
         Returns:
-            SessionDocument if found, None otherwise
-        """
-        try:
-            await self._get_client()
+            Dictionary containing Cosmos DB configuration
 
-            response = await self._sessions_container.read_item(
-                item=session_id, partition_key=session_id
+        Raises:
+            ValueError: If required configuration is missing
+        """
+        config = self.config_manager.get_settings()
+
+        # Try to get from various configuration sources
+        cosmos_endpoint = None
+        cosmos_key = None
+
+        if isinstance(config, dict):
+            # Dictionary-based configuration
+            cosmos_endpoint = (
+                config.get("cosmos_endpoint")
+                or config.get("COSMOS_ENDPOINT")
+                or config.get("cosmos", {}).get("endpoint")
+            )
+            cosmos_key = (
+                config.get("cosmos_key")
+                or config.get("COSMOS_KEY")
+                or config.get("cosmos", {}).get("key")
+            )
+        else:
+            # Pydantic settings object
+            cosmos_endpoint = getattr(config, "cosmos_endpoint", None) or getattr(
+                config, "COSMOS_ENDPOINT", None
+            )
+            cosmos_key = getattr(config, "cosmos_key", None) or getattr(config, "COSMOS_KEY", None)
+
+        # Fall back to environment variables
+        if not cosmos_endpoint:
+            cosmos_endpoint = os.getenv("COSMOS_ENDPOINT") or os.getenv("AZURE_COSMOS_ENDPOINT")
+        if not cosmos_key:
+            cosmos_key = os.getenv("COSMOS_KEY") or os.getenv("AZURE_COSMOS_KEY")
+
+        if not cosmos_endpoint or not cosmos_key:
+            raise ValueError(
+                "Cosmos DB configuration missing. Please set COSMOS_ENDPOINT "
+                "and COSMOS_KEY in your configuration or environment variables."
             )
 
-            session_doc = SessionDocument.from_dict(response)
-            self.logger.info(f"Retrieved session: {session_id}")
-            return session_doc
+        # Get database and container names
+        database_name = "AgenticPlatform"
+        container_name = "Context"
 
-        except cosmos_exceptions.CosmosResourceNotFoundError:
-            self.logger.warning(f"Session not found: {session_id}")
-            return None
-        except Exception as e:
-            self.logger.error(f"Error retrieving session {session_id}: {e}")
-            raise SDKError(f"Failed to retrieve session: {e}") from e
+        if isinstance(config, dict):
+            database_name = (
+                config.get("cosmos_database")
+                or config.get("COSMOS_DATABASE")
+                or config.get("cosmos", {}).get("database_name", database_name)
+            )
+            container_name = (
+                config.get("cosmos_container")
+                or config.get("COSMOS_CONTAINER")
+                or config.get("cosmos", {}).get("container_name", container_name)
+            )
+        else:
+            database_name = getattr(config, "cosmos_database", database_name)
+            container_name = getattr(config, "cosmos_container", container_name)
 
-    async def update_session(
-        self, session_id: str, context: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None
-    ) -> SessionDocument:
+        return {
+            "endpoint": cosmos_endpoint,
+            "key": cosmos_key,
+            "database_name": database_name,
+            "container_name": container_name,
+        }
+
+    def load_or_create(self, session_id: str, subject_id: str) -> Dict[str, Any]:
         """
-        Update session context and metadata.
+        Loads a session context, creating a new one if it doesn't exist.
 
         Args:
-            session_id: Session identifier
-            context: Updated context data
-            metadata: Updated metadata (optional)
+            session_id: Unique identifier for the session
+            subject_id: Identifier for the subject (user/entity) of the session
 
         Returns:
-            Updated SessionDocument
+            Dictionary containing the session document
+
+        Raises:
+            Exception: If there's an error accessing Cosmos DB
         """
         try:
-            await self._get_client()
+            # Attempt to read existing session
+            # read_item is efficient for point reads
+            session_doc = self.container.read_item(item=session_id, partition_key=subject_id)
 
-            # Get existing session
-            existing_session = await self.get_session(session_id)
-            if not existing_session:
-                raise SDKError(f"Session not found: {session_id}")
+            self.logger.info(f"Loaded existing session {session_id}")
+            return session_doc
 
-            # Update fields
-            existing_session.context = context
-            existing_session.updated_at = datetime.now(timezone.utc)
-            if metadata is not None:
-                existing_session.metadata = metadata
+        except exceptions.CosmosResourceNotFoundError:
+            self.logger.info(f"Session {session_id} not found. Creating new session.")
+
+            # Create new session document
+            new_session_doc = self._create_new_session_document(session_id, subject_id)
 
             # Save to Cosmos DB
-            await self._sessions_container.upsert_item(body=existing_session.to_dict())
+            created_doc = self.container.create_item(body=new_session_doc)
+            self.logger.info(f"Created new session {session_id}")
 
-            self.logger.info(f"Updated session: {session_id}")
-            return existing_session
-
-        except Exception as e:
-            self.logger.error(f"Error updating session {session_id}: {e}")
-            raise SDKError(f"Failed to update session: {e}") from e
-
-    async def append_to_context(self, session_id: str, key: str, value: Any) -> SessionDocument:
-        """
-        Append data to session context.
-
-        Args:
-            session_id: Session identifier
-            key: Context key to update
-            value: Value to append or set
-
-        Returns:
-            Updated SessionDocument
-        """
-        try:
-            session_doc = await self.get_session(session_id)
-            if not session_doc:
-                raise SDKError(f"Session not found: {session_id}")
-
-            # Handle different append scenarios
-            if key in session_doc.context:
-                existing_value = session_doc.context[key]
-                if isinstance(existing_value, list):
-                    existing_value.append(value)
-                elif isinstance(existing_value, dict) and isinstance(value, dict):
-                    existing_value.update(value)
-                else:
-                    session_doc.context[key] = value
-            else:
-                session_doc.context[key] = value
-
-            return await self.update_session(session_id, session_doc.context, session_doc.metadata)
+            return created_doc
 
         except Exception as e:
-            self.logger.error(f"Error appending to context {session_id}: {e}")
-            raise SDKError(f"Failed to append to context: {e}") from e
+            self.logger.error(f"Error loading/creating session {session_id}: {e}")
+            raise
 
-    async def delete_session(self, session_id: str) -> bool:
-        """
-        Delete a session document.
-
-        Args:
-            session_id: Session identifier
-
-        Returns:
-            True if deleted, False if not found
-        """
-        try:
-            await self._get_client()
-
-            await self._sessions_container.delete_item(item=session_id, partition_key=session_id)
-
-            self.logger.info(f"Deleted session: {session_id}")
-            return True
-
-        except cosmos_exceptions.CosmosResourceNotFoundError:
-            self.logger.warning(f"Session not found for deletion: {session_id}")
-            return False
-        except Exception as e:
-            self.logger.error(f"Error deleting session {session_id}: {e}")
-            raise SDKError(f"Failed to delete session: {e}") from e
-
-    async def list_sessions_by_subject(
-        self, subject_id: str, limit: int = 100
-    ) -> List[SessionDocument]:
-        """
-        List sessions for a specific subject.
-
-        Args:
-            subject_id: Subject identifier
-            limit: Maximum number of sessions to return
-
-        Returns:
-            List of SessionDocument objects
-        """
-        try:
-            await self._get_client()
-
-            query = "SELECT * FROM c WHERE c.subject_id = @subject_id ORDER BY c.updated_at DESC"
-            parameters = [{"name": "@subject_id", "value": subject_id}]
-
-            sessions = []
-            async for item in self._sessions_container.query_items(
-                query=query, parameters=parameters, enable_cross_partition_query=True
-            ):
-                sessions.append(SessionDocument.from_dict(item))
-                if len(sessions) >= limit:
-                    break
-
-            self.logger.info(f"Retrieved {len(sessions)} sessions for subject: {subject_id}")
-            return sessions
-
-        except Exception as e:
-            self.logger.error(f"Error listing sessions for subject {subject_id}: {e}")
-            raise SDKError(f"Failed to list sessions: {e}") from e
-
-    async def cleanup_expired_sessions(self) -> int:
-        """
-        Clean up expired sessions (if TTL is not handled automatically).
-
-        Returns:
-            Number of sessions cleaned up
-        """
-        try:
-            await self._get_client()
-
-            # Note: If TTL is properly configured in Cosmos DB, this may not be needed
-            # as Cosmos will automatically delete expired documents
-
-            now = datetime.now(timezone.utc)
-            query = """
-            SELECT c.id, c.session_id, c.created_at, c.ttl
-            FROM c
-            WHERE c.ttl IS NOT NULL
-            """
-
-            expired_sessions = []
-            async for item in self._sessions_container.query_items(
-                query=query, enable_cross_partition_query=True
-            ):
-                created_at = datetime.fromisoformat(item["created_at"])
-                ttl_seconds = item.get("ttl", self.default_ttl)
-
-                if (now - created_at).total_seconds() > ttl_seconds:
-                    expired_sessions.append(item["session_id"])
-
-            # Delete expired sessions
-            deleted_count = 0
-            for session_id in expired_sessions:
-                if await self.delete_session(session_id):
-                    deleted_count += 1
-
-            self.logger.info(f"Cleaned up {deleted_count} expired sessions")
-            return deleted_count
-
-        except Exception as e:
-            self.logger.error(f"Error during cleanup: {e}")
-            raise SDKError(f"Failed to cleanup sessions: {e}") from e
-
-    async def health_check(self) -> bool:
-        """
-        Check if the context store service is healthy.
-
-        Returns:
-            True if healthy, False otherwise
-        """
-        try:
-            await self._get_client()
-
-            # Simple query to test connectivity
-            query = "SELECT VALUE COUNT(1) FROM c"
-            result = [
-                item
-                async for item in self._sessions_container.query_items(
-                    query=query, enable_cross_partition_query=True
-                )
-            ]
-
-            self.logger.info("Context store health check passed")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Context store health check failed: {e}")
-            return False
-
-    async def close(self):
-        """Close the Cosmos DB client."""
-        if self._client:
-            await self._client.close()
-            self._client = None
-            self._database = None
-            self._sessions_container = None
-
-    async def __aenter__(self):
-        """Async context manager entry."""
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit."""
-        await self.close()
-
-
-# Mock client for development/testing
-class MockContextStoreClient(ContextStoreClient):
-    """Mock context store client for development and testing."""
-
-    def __init__(self):
-        self.logger = logging.getLogger(__name__)
-        self._sessions: Dict[str, SessionDocument] = {}
-        self.default_ttl = 3600
-
-    async def create_session(
+    def update_and_save(
         self,
-        session_id: str,
-        subject_id: str,
-        initial_context: Optional[Dict[str, Any]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        ttl: Optional[int] = None,
-    ) -> SessionDocument:
-        """Mock session creation."""
-        if session_id in self._sessions:
-            raise SDKError(f"Session {session_id} already exists")
+        context_doc: Dict[str, Any],
+        user_input: str,
+        agent_output: str,
+        agent_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Appends the latest turn to the thread and saves the document.
 
-        now = datetime.now(timezone.utc)
-        session_doc = SessionDocument(
-            session_id=session_id,
-            subject_id=subject_id,
-            created_at=now,
-            updated_at=now,
-            context=initial_context or {},
-            metadata=metadata,
-            ttl=ttl or self.default_ttl,
-        )
+        Args:
+            context_doc: The existing context document
+            user_input: The user's input message
+            agent_output: The agent's response
+            agent_name: Optional name of the responding agent
 
-        self._sessions[session_id] = session_doc
-        return session_doc
+        Returns:
+            Updated context document
 
-    async def get_session(self, session_id: str) -> Optional[SessionDocument]:
-        """Mock session retrieval."""
-        return self._sessions.get(session_id)
+        Raises:
+            Exception: If there's an error saving to Cosmos DB
+        """
+        try:
+            now = datetime.now(timezone.utc).isoformat()
 
-    async def update_session(
-        self, session_id: str, context: Dict[str, Any], metadata: Optional[Dict[str, Any]] = None
-    ) -> SessionDocument:
-        """Mock session update."""
-        if session_id not in self._sessions:
-            raise SDKError(f"Session not found: {session_id}")
+            # Append user message
+            user_message = {
+                "id": str(uuid.uuid4()),
+                "sender": "user",
+                "timestamp": now,
+                "content": user_input,
+                "type": "text",
+            }
+            context_doc["thread"].append(user_message)
 
-        session_doc = self._sessions[session_id]
-        session_doc.context = context
-        session_doc.updated_at = datetime.now(timezone.utc)
-        if metadata is not None:
-            session_doc.metadata = metadata
+            # Append agent response
+            agent_message = {
+                "id": str(uuid.uuid4()),
+                "sender": "agent",
+                "timestamp": now,
+                "content": agent_output,
+                "type": "text",
+            }
 
-        return session_doc
+            # Add agent name if provided
+            if agent_name:
+                agent_message["agent_name"] = agent_name
 
-    async def append_to_context(self, session_id: str, key: str, value: Any) -> SessionDocument:
-        """Mock context append."""
-        session_doc = await self.get_session(session_id)
-        if not session_doc:
-            raise SDKError(f"Session not found: {session_id}")
+            context_doc["thread"].append(agent_message)
 
-        if key in session_doc.context:
-            existing_value = session_doc.context[key]
-            if isinstance(existing_value, list):
-                existing_value.append(value)
-            elif isinstance(existing_value, dict) and isinstance(value, dict):
-                existing_value.update(value)
-            else:
-                session_doc.context[key] = value
-        else:
-            session_doc.context[key] = value
+            # Update timestamp
+            context_doc["updated_at"] = now
 
-        return await self.update_session(session_id, session_doc.context, session_doc.metadata)
+            # Save to Cosmos DB using upsert
+            updated_doc = self.container.upsert_item(body=context_doc)
 
-    async def delete_session(self, session_id: str) -> bool:
-        """Mock session deletion."""
-        if session_id in self._sessions:
-            del self._sessions[session_id]
-            return True
-        return False
+            self.logger.info(f"Context for session {context_doc['id']} saved")
+            return updated_doc
 
-    async def list_sessions_by_subject(
-        self, subject_id: str, limit: int = 100
-    ) -> List[SessionDocument]:
-        """Mock session listing."""
-        sessions = [
-            session for session in self._sessions.values() if session.subject_id == subject_id
-        ]
-        return sorted(sessions, key=lambda x: x.updated_at, reverse=True)[:limit]
+        except Exception as e:
+            self.logger.error(f"Error updating session {context_doc.get('id')}: {e}")
+            raise
 
-    async def cleanup_expired_sessions(self) -> int:
-        """Mock cleanup."""
-        now = datetime.now(timezone.utc)
-        expired_sessions = []
+    def get_conversation_history(
+        self, session_id: str, subject_id: str, limit: Optional[int] = None
+    ) -> list:
+        """
+        Retrieves conversation history for a session.
 
-        for session_id, session in self._sessions.items():
-            ttl_seconds = session.ttl or self.default_ttl
-            if (now - session.created_at).total_seconds() > ttl_seconds:
-                expired_sessions.append(session_id)
+        Args:
+            session_id: Unique identifier for the session
+            subject_id: Identifier for the subject of the session
+            limit: Optional limit on number of messages to return
 
-        for session_id in expired_sessions:
-            del self._sessions[session_id]
+        Returns:
+            List of conversation messages
+        """
+        try:
+            session_doc = self.container.read_item(item=session_id, partition_key=subject_id)
 
-        return len(expired_sessions)
+            thread = session_doc.get("thread", [])
 
-    async def health_check(self) -> bool:
-        """Mock health check."""
-        return True
+            if limit:
+                thread = thread[-limit:]
 
-    async def close(self):
-        """Mock close."""
-        pass
+            return thread
+
+        except exceptions.CosmosResourceNotFoundError:
+            self.logger.warning(f"Session {session_id} not found")
+            return []
+        except Exception as e:
+            self.logger.error(f"Error retrieving history for session {session_id}: {e}")
+            raise
+
+    def update_session_metadata(
+        self, session_id: str, subject_id: str, metadata: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Updates metadata for a session.
+
+        Args:
+            session_id: Unique identifier for the session
+            subject_id: Identifier for the subject of the session
+            metadata: Metadata to update
+
+        Returns:
+            Updated session document
+        """
+        try:
+            session_doc = self.container.read_item(item=session_id, partition_key=subject_id)
+
+            # Update metadata
+            session_doc["metadata"].update(metadata)
+            session_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+            # Save changes
+            updated_doc = self.container.upsert_item(body=session_doc)
+
+            self.logger.info(f"Metadata updated for session {session_id}")
+            return updated_doc
+
+        except Exception as e:
+            self.logger.error(f"Error updating metadata for session {session_id}: {e}")
+            raise
+
+    def _create_new_session_document(
+        self, session_id: str, subject_id: str, subject_type: str = "user"
+    ) -> Dict[str, Any]:
+        """
+        Creates a new, empty session document based on the platform schema.
+
+        Args:
+            session_id: Unique identifier for the session
+            subject_id: Identifier for the subject of the session
+            subject_type: Type of subject (default: "user")
+
+        Returns:
+            New session document dictionary
+        """
+        now = datetime.now(timezone.utc).isoformat()
+
+        return {
+            "id": session_id,
+            "subject": {"type": subject_type, "id": subject_id},
+            "session_type": "chat",
+            "initiator": {"type": "user", "id": subject_id},
+            "created_at": now,
+            "updated_at": now,
+            "status": "active",
+            "metadata": {"schema_version": "1.5.0", "sdk_version": "1.0.0"},
+            "thread": [],
+            "context": {"memory": [], "state": {}},
+            "security": {},
+        }
+
+    def close_session(self, session_id: str, subject_id: str) -> Dict[str, Any]:
+        """
+        Marks a session as closed.
+
+        Args:
+            session_id: Unique identifier for the session
+            subject_id: Identifier for the subject of the session
+
+        Returns:
+            Updated session document
+        """
+        try:
+            session_doc = self.container.read_item(item=session_id, partition_key=subject_id)
+
+            # Update status and timestamp
+            session_doc["status"] = "closed"
+            session_doc["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+            # Save changes
+            updated_doc = self.container.upsert_item(body=session_doc)
+
+            self.logger.info(f"Session {session_id} closed")
+            return updated_doc
+
+        except Exception as e:
+            self.logger.error(f"Error closing session {session_id}: {e}")
+            raise

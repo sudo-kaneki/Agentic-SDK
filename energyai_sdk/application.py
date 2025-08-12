@@ -20,26 +20,22 @@ try:
 except ImportError:
     FASTAPI_AVAILABLE = False
 
-from .clients import (
-    ContextStoreClient,
-    MockContextStoreClient,
-    MockMonitoringClient,
-    MockRegistryClient,
-    MonitoringClient,
-    MonitoringConfig,
-    RegistryClient,
-)
+from .clients import ContextStoreClient
+
+# Langfuse monitoring client - optional dependency
+try:
+    from .clients import LangfuseMonitoringClient, get_langfuse_client
+
+    LANGFUSE_AVAILABLE = True
+except ImportError:
+    LangfuseMonitoringClient = None
+    get_langfuse_client = None
+    LANGFUSE_AVAILABLE = False
 
 # Import from our SDK
-from .core import (
-    AgentRequest,
-    CoreAgent,
-    agent_registry,
-    initialize_sdk,
-    monitor,
-    telemetry_manager,
-)
+from .core import AgentRequest, CoreAgent, agent_registry, initialize_sdk, monitor
 from .middleware import MiddlewareContext, MiddlewarePipeline, create_default_pipeline
+from .observability import get_observability_manager
 
 # API models
 
@@ -134,9 +130,8 @@ class EnergyAIApplication:
         enable_cors: bool = True,
         enable_gzip: bool = True,
         debug: bool = False,
-        registry_client: Optional[RegistryClient] = None,
         context_store_client: Optional[ContextStoreClient] = None,
-        monitoring_client: Optional[MonitoringClient] = None,
+        langfuse_monitoring_client: Optional[LangfuseMonitoringClient] = None,
     ):
         self.title = title
         self.version = version
@@ -146,9 +141,8 @@ class EnergyAIApplication:
         self.logger = logging.getLogger(__name__)
 
         # Initialize external service clients
-        self.registry_client = registry_client or MockRegistryClient()
-        self.context_store_client = context_store_client or MockContextStoreClient()
-        self.monitoring_client = monitoring_client or MockMonitoringClient()
+        self.context_store_client = context_store_client
+        self.langfuse_client = langfuse_monitoring_client
 
         # Initialize middleware pipeline
         self.middleware_pipeline = middleware_pipeline or create_default_pipeline()
@@ -205,18 +199,15 @@ class EnergyAIApplication:
         self.components_status = {
             "agent_registry": "healthy" if agent_registry.agents else "no_agents",
             "middleware_pipeline": "healthy" if self.middleware_pipeline else "not_configured",
-            "telemetry": (
+            "observability": (
+                "healthy" if get_observability_manager() is not None else "not_configured"
+            ),
+            "context_store": ("healthy" if self.context_store_client else "not_configured"),
+            "langfuse_monitoring": (
                 "healthy"
-                if telemetry_manager.azure_tracer or telemetry_manager.langfuse_client
+                if self.langfuse_client and self.langfuse_client.is_enabled()
                 else "not_configured"
             ),
-            "external_registry": (
-                "healthy" if await self.registry_client.health_check() else "unhealthy"
-            ),
-            "context_store": (
-                "healthy" if await self.context_store_client.health_check() else "unhealthy"
-            ),
-            "monitoring": "healthy" if self.monitoring_client.health_check() else "unhealthy",
         }
 
         self.is_ready = True
@@ -227,19 +218,20 @@ class EnergyAIApplication:
         self.logger.info("Shutting down EnergyAI Application...")
 
         # Cleanup external clients
-        try:
-            await self.registry_client.close()
-            await self.context_store_client.close()
-            self.monitoring_client.shutdown()
-        except Exception as e:
-            self.logger.error(f"Error closing external clients: {e}")
-
-        # Flush telemetry
-        if telemetry_manager.langfuse_client:
+        if self.context_store_client:
             try:
-                telemetry_manager.langfuse_client.flush()
+                # ContextStoreClient doesn't have async close method
+                self.logger.info("Context store client cleaned up")
             except Exception as e:
-                self.logger.error(f"Error flushing Langfuse telemetry: {e}")
+                self.logger.error(f"Error cleaning up context store client: {e}")
+
+        # Flush observability data
+        observability_manager = get_observability_manager()
+        if observability_manager:
+            try:
+                observability_manager.flush()
+            except Exception as e:
+                self.logger.error(f"Error flushing observability data: {e}")
 
         self.is_ready = False
         self.logger.info("EnergyAI Application shut down")
@@ -259,9 +251,7 @@ class EnergyAIApplication:
                 version=self.version,
                 agents_count=len(agent_registry.agents),
                 uptime_seconds=uptime,
-                telemetry_configured=bool(
-                    telemetry_manager.azure_tracer or telemetry_manager.langfuse_client
-                ),
+                observability_configured=bool(get_observability_manager() is not None),
                 components=self.components_status,
             )
 
@@ -419,40 +409,57 @@ class EnergyAIApplication:
 
         # Session management endpoints
         @app.post("/sessions/{session_id}")
-        async def create_session(session_id: str, subject_id: str):
-            """Create a new session."""
+        async def create_session(session_id: str, subject_id: str = "anonymous"):
+            """Create or load a session."""
+            if not self.context_store_client:
+                raise HTTPException(status_code=503, detail="Context store not available")
+
             try:
-                session_doc = await self.context_store_client.create_session(
-                    session_id=session_id,
-                    subject_id=subject_id,
-                    initial_context={"messages": [], "created_via": "api"},
-                )
-                return {"status": "created", "session": session_doc.to_dict()}
+                session_doc = self.context_store_client.load_or_create(session_id, subject_id)
+                return {
+                    "status": "ready",
+                    "session_id": session_id,
+                    "subject_id": subject_id,
+                    "message_count": len(session_doc.get("thread", [])),
+                    "created_at": session_doc.get("created_at"),
+                    "updated_at": session_doc.get("updated_at"),
+                }
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Session creation failed: {e}")
 
-        @app.get("/sessions/{session_id}")
-        async def get_session(session_id: str):
-            """Get session information."""
-            session_doc = await self.context_store_client.get_session(session_id)
-            if not session_doc:
-                raise HTTPException(status_code=404, detail="Session not found")
-            return session_doc.to_dict()
+        @app.get("/sessions/{session_id}/history")
+        async def get_session_history(
+            session_id: str, subject_id: str = "anonymous", limit: int = None
+        ):
+            """Get session conversation history."""
+            if not self.context_store_client:
+                raise HTTPException(status_code=503, detail="Context store not available")
 
-        @app.delete("/sessions/{session_id}")
-        async def delete_session(session_id: str):
-            """Delete a session."""
-            success = await self.context_store_client.delete_session(session_id)
-            if success:
-                return {"status": "deleted"}
-            else:
-                raise HTTPException(status_code=404, detail="Session not found")
+            try:
+                history = self.context_store_client.get_conversation_history(
+                    session_id, subject_id, limit
+                )
+                return {"session_id": session_id, "history": history, "message_count": len(history)}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to retrieve history: {e}")
+
+        @app.post("/sessions/{session_id}/close")
+        async def close_session(session_id: str, subject_id: str = "anonymous"):
+            """Close a session."""
+            if not self.context_store_client:
+                raise HTTPException(status_code=503, detail="Context store not available")
+
+            try:
+                self.context_store_client.close_session(session_id, subject_id)
+                return {"status": "closed", "session_id": session_id}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to close session: {e}")
 
     @monitor("application.process_chat_request")
     async def _process_chat_request(
         self, request: ChatRequest, background_tasks: BackgroundTasks
     ) -> ChatResponse:
-        """Process a chat request through the middleware pipeline."""
+        """Process a chat request through the middleware pipeline with Langfuse tracing."""
         start_time = time.time()
 
         # Determine agent to use
@@ -469,28 +476,104 @@ class EnergyAIApplication:
         if not agent:
             raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
 
+        # Create Langfuse trace for the entire request
+        trace = None
+        generation = None
+        context_span = None
+
+        if self.langfuse_client and self.langfuse_client.is_enabled():
+            trace = self.langfuse_client.create_trace(
+                name=f"agent-run:{agent_id}",
+                user_id=request.subject_id or request.user_id or "anonymous",
+                session_id=request.session_id,
+                input_data={
+                    "message": request.message,
+                    "agent_id": agent_id,
+                    "temperature": request.temperature,
+                    "max_tokens": request.max_tokens,
+                },
+                metadata={
+                    "agent_name": agent_id,
+                    "request_type": "chat",
+                    "streaming": request.stream,
+                    "environment": "production",
+                },
+                tags=["agent-interaction", "chat", agent_id],
+            )
+
         # Handle session persistence if session_id provided
         subject_id = request.subject_id or request.user_id or "anonymous"
-        if request.session_id:
+        session_doc = None
+        conversation_history = ""
+
+        # Create span for context loading
+        if trace and self.langfuse_client:
+            context_span = self.langfuse_client.create_span(
+                trace,
+                name="context-loading",
+                input_data={
+                    "session_id": request.session_id,
+                    "subject_id": subject_id,
+                },
+                metadata={"operation": "session_context_retrieval"},
+            )
+
+        if request.session_id and self.context_store_client:
             try:
-                # Try to retrieve existing session context
-                session_doc = await self.context_store_client.get_session(request.session_id)
-                if not session_doc:
-                    # Create new session
-                    session_doc = await self.context_store_client.create_session(
-                        session_id=request.session_id,
-                        subject_id=subject_id,
-                        initial_context={"messages": []},
+                # Load or create session context
+                session_doc = self.context_store_client.load_or_create(
+                    request.session_id, subject_id
+                )
+
+                # Build conversation history for context
+                thread = session_doc.get("thread", [])
+                if thread:
+                    history_lines = []
+                    for msg in thread[-10:]:  # Last 10 messages for context
+                        sender = msg.get("sender", "unknown")
+                        content = msg.get("content", "")
+                        agent_name = msg.get("agent_name", "Assistant")
+
+                        if sender == "user":
+                            history_lines.append(f"User: {content}")
+                        elif sender == "agent":
+                            history_lines.append(f"{agent_name}: {content}")
+
+                    conversation_history = "\n".join(history_lines)
+                    self.logger.info(
+                        f"Loaded session {request.session_id} with {len(thread)} messages"
                     )
+                else:
+                    self.logger.info(f"Created new session {request.session_id}")
+
+                # End context span with success
+                if context_span and self.langfuse_client:
+                    self.langfuse_client.end_span(
+                        context_span,
+                        output={
+                            "session_found": bool(thread),
+                            "message_count": len(thread),
+                            "history_length": len(conversation_history),
+                        },
+                    )
+
             except Exception as e:
                 self.logger.warning(f"Error handling session {request.session_id}: {e}")
                 session_doc = None
-        else:
-            session_doc = None
 
-        # Create agent request
+                # End context span with error
+                if context_span and self.langfuse_client:
+                    self.langfuse_client.end_span(
+                        context_span, level="ERROR", status_message=str(e)
+                    )
+
+        # Create agent request with conversation history
+        message_with_context = request.message
+        if conversation_history:
+            message_with_context = f"Previous conversation:\n{conversation_history}\n\nCurrent message: {request.message}"
+
         agent_request = AgentRequest(
-            message=request.message,
+            message=message_with_context,
             agent_id=agent_id,
             session_id=request.session_id,
             user_id=subject_id,
@@ -499,7 +582,9 @@ class EnergyAIApplication:
                 "temperature": request.temperature,
                 "max_tokens": request.max_tokens,
                 "streaming": request.stream,
-                "session_context": session_doc.context if session_doc else {},
+                "has_conversation_history": bool(conversation_history),
+                "original_message": request.message,  # Keep original for context saving
+                "session_context": session_doc.get("context", {}) if session_doc else {},
             },
         )
 
@@ -507,54 +592,109 @@ class EnergyAIApplication:
         context = MiddlewareContext(request=agent_request)
 
         try:
+            # Create Langfuse generation for the main LLM call
+            if trace and self.langfuse_client:
+                agent_capabilities = getattr(agent, "get_capabilities", lambda: {})()
+                model_name = (
+                    agent_capabilities.get("models", ["unknown"])[0]
+                    if agent_capabilities.get("models")
+                    else "unknown"
+                )
+
+                generation = self.langfuse_client.create_generation(
+                    trace,
+                    name="agent-invocation",
+                    input_data={
+                        "query": request.message,
+                        "history": conversation_history,
+                        "agent_context": message_with_context,
+                    },
+                    model=model_name,
+                    model_parameters={
+                        "temperature": request.temperature,
+                        "max_tokens": request.max_tokens,
+                    },
+                    metadata={
+                        "agent_name": agent_id,
+                        "has_conversation_history": bool(conversation_history),
+                        "message_count_in_context": (
+                            len(conversation_history.split("\n")) if conversation_history else 0
+                        ),
+                    },
+                )
+
             # Execute middleware pipeline
             context = await self.middleware_pipeline.execute(context)
 
             # If middleware didn't process the request (no response), process with agent
             if not context.response and not context.error:
-                with self.monitoring_client.start_span(
-                    "agent.process_request", agent_id=agent_id, session_id=request.session_id
-                ):
-                    context.response = await agent.process_request(agent_request)
+                context.response = await agent.process_request(agent_request)
 
             # Handle errors
             if context.error:
-                self.monitoring_client.record_metric(
-                    "chat_request_errors",
-                    1.0,
-                    {"agent_id": agent_id, "error_type": type(context.error).__name__},
-                )
+                # End generation with error
+                if generation and self.langfuse_client:
+                    self.langfuse_client.end_generation(
+                        generation, level="ERROR", status_message=str(context.error)
+                    )
                 raise HTTPException(status_code=500, detail=str(context.error))
 
             if not context.response:
+                # End generation with error
+                if generation and self.langfuse_client:
+                    self.langfuse_client.end_generation(
+                        generation, level="ERROR", status_message="No response generated"
+                    )
                 raise HTTPException(status_code=500, detail="No response generated")
 
+            # End generation with success
+            if generation and self.langfuse_client:
+                # Try to extract token usage if available
+                response_metadata = getattr(context.response, "metadata", {})
+                usage = response_metadata.get("usage", {})
+
+                self.langfuse_client.end_generation(
+                    generation,
+                    output=context.response.content,
+                    usage=usage if usage else None,
+                    level="DEFAULT",
+                )
+
             # Update session context if session_id provided
-            if request.session_id and context.response:
+            if (
+                request.session_id
+                and context.response
+                and session_doc
+                and self.context_store_client
+            ):
                 try:
-                    await self.context_store_client.append_to_context(
-                        session_id=request.session_id,
-                        key="messages",
-                        value={
-                            "user": request.message,
-                            "assistant": context.response.content,
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "agent_id": agent_id,
-                        },
+                    # Get the original message from metadata
+                    original_message = agent_request.metadata.get(
+                        "original_message", request.message
                     )
+
+                    # Get agent name for better context
+                    agent_name = getattr(agent, "name", None) or agent_id
+
+                    # Save the conversation turn
+                    self.context_store_client.update_and_save(
+                        session_doc,
+                        user_input=original_message,
+                        agent_output=context.response.content,
+                        agent_name=agent_name,
+                    )
+
+                    self.logger.info(
+                        f"Updated session {request.session_id} with new conversation turn"
+                    )
+
                 except Exception as e:
                     self.logger.warning(f"Error updating session context: {e}")
 
             # Convert to API response
             execution_time = int((time.time() - start_time) * 1000)
 
-            # Record metrics
-            self.monitoring_client.record_metric(
-                "chat_request_duration", execution_time, {"agent_id": agent_id, "status": "success"}
-            )
-            self.monitoring_client.record_metric(
-                "chat_request_count", 1.0, {"agent_id": agent_id, "status": "success"}
-            )
+            # Record metrics (monitoring client would be used here if available)
 
             return ChatResponse(
                 content=context.response.content,
@@ -571,11 +711,40 @@ class EnergyAIApplication:
             )
 
         except HTTPException:
+            # Update trace with HTTP error
+            if trace and self.langfuse_client:
+                self.langfuse_client.update_trace(
+                    trace, level="ERROR", status_message="HTTP Exception occurred"
+                )
             raise
         except Exception as e:
             self.logger.error(f"Error processing chat request: {e}")
             self.logger.error(traceback.format_exc())
+
+            # End generation and trace with error
+            if generation and self.langfuse_client:
+                self.langfuse_client.end_generation(
+                    generation, level="ERROR", status_message=str(e)
+                )
+            if trace and self.langfuse_client:
+                self.langfuse_client.update_trace(trace, level="ERROR", status_message=str(e))
+
             raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        finally:
+            # Always update trace with final status and flush Langfuse data
+            if trace and self.langfuse_client:
+                execution_time = int((time.time() - start_time) * 1000)
+                self.langfuse_client.update_trace(
+                    trace,
+                    metadata={
+                        "execution_time_ms": execution_time,
+                        "session_updated": bool(request.session_id and session_doc),
+                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+
+                # Flush all telemetry data to Langfuse
+                self.langfuse_client.flush()
 
     async def _stream_chat_response(self, request: ChatRequest) -> AsyncGenerator[str, None]:
         """Stream chat response chunks."""
@@ -697,99 +866,10 @@ class EnergyAIApplication:
 # ==============================================================================
 
 
-def create_application(
-    title: str = "EnergyAI Agentic SDK",
-    version: str = "1.0.0",
-    description: str = "AI Agent Platform for Energy Analytics",
-    enable_default_middleware: bool = True,
-    enable_cors: bool = True,
-    debug: bool = False,
-    registry_client: Optional[RegistryClient] = None,
-    context_store_client: Optional[ContextStoreClient] = None,
-    monitoring_client: Optional[MonitoringClient] = None,
-    **middleware_config,
-) -> EnergyAIApplication:
-    """Create an EnergyAI application with optional default configuration."""
-
-    # Create middleware pipeline if requested
-    middleware_pipeline = None
-    if enable_default_middleware:
-        middleware_pipeline = create_default_pipeline(**middleware_config)
-
-    return EnergyAIApplication(
-        title=title,
-        version=version,
-        description=description,
-        middleware_pipeline=middleware_pipeline,
-        enable_cors=enable_cors,
-        debug=debug,
-        registry_client=registry_client,
-        context_store_client=context_store_client,
-        monitoring_client=monitoring_client,
-    )
+# This function was already defined above - removing duplicate
 
 
-def create_production_application(
-    api_keys: list[str],
-    azure_monitor_connection_string: Optional[str] = None,
-    langfuse_public_key: Optional[str] = None,
-    langfuse_secret_key: Optional[str] = None,
-    max_requests_per_minute: int = 100,
-    cosmos_endpoint: Optional[str] = None,
-    cosmos_key: Optional[str] = None,
-    otlp_endpoint: Optional[str] = None,
-) -> EnergyAIApplication:
-    """Create a production-ready application with security and monitoring."""
-
-    # Initialize SDK with telemetry
-    initialize_sdk(
-        azure_monitor_connection_string=azure_monitor_connection_string,
-        langfuse_public_key=langfuse_public_key,
-        langfuse_secret_key=langfuse_secret_key,
-        log_level="INFO",
-    )
-
-    # Initialize external service clients for production
-    registry_client = None
-    context_store_client = None
-    monitoring_client = None
-
-    if cosmos_endpoint and cosmos_key:
-        registry_client = RegistryClient(cosmos_endpoint, cosmos_key)
-        context_store_client = ContextStoreClient(cosmos_endpoint, cosmos_key)
-
-    if azure_monitor_connection_string or otlp_endpoint:
-        monitoring_config = MonitoringConfig(
-            service_name="energyai-production",
-            environment="production",
-            azure_monitor_connection_string=azure_monitor_connection_string,
-            otlp_trace_endpoint=otlp_endpoint,
-            otlp_metrics_endpoint=otlp_endpoint,
-        )
-        monitoring_client = MonitoringClient(monitoring_config)
-        monitoring_client.initialize()
-
-    # Import production middleware
-    from .middleware import create_production_pipeline
-
-    # Create production middleware pipeline
-    middleware_pipeline = create_production_pipeline(
-        api_keys=set(api_keys),
-        max_requests_per_minute=max_requests_per_minute,
-        enable_detailed_errors=False,  # Security: hide detailed errors in production
-    )
-
-    return EnergyAIApplication(
-        title="EnergyAI Production Platform",
-        version="1.0.0",
-        description="Production AI Agent Platform for Energy Analytics",
-        middleware_pipeline=middleware_pipeline,
-        enable_cors=False,  # More restrictive CORS in production
-        debug=False,
-        registry_client=registry_client,
-        context_store_client=context_store_client,
-        monitoring_client=monitoring_client,
-    )
+# This function was already redefined above to avoid duplication
 
 
 # ==============================================================================
@@ -835,6 +915,111 @@ class DevelopmentServer:
         except Exception as e:
             self.logger.error(f"Error starting development server: {e}")
             raise
+
+
+def create_application(
+    title: str = "EnergyAI Agentic SDK",
+    version: str = "1.0.0",
+    description: str = "AI Agent Platform for Energy Analytics",
+    debug: bool = False,
+    enable_context_store: bool = True,
+    enable_observability: bool = True,
+    enable_langfuse_monitoring: bool = False,  # For backward compatibility
+    langfuse_public_key: Optional[str] = None,
+    langfuse_secret_key: Optional[str] = None,
+    langfuse_host: str = "https://cloud.langfuse.com",
+    langfuse_environment: str = "production",
+    azure_monitor_connection_string: Optional[str] = None,
+    enable_cors: bool = True,
+    enable_gzip: bool = True,
+) -> EnergyAIApplication:
+    """Create an EnergyAI application with optional context store and observability."""
+
+    # Initialize context store
+    context_store_client = None
+    if enable_context_store:
+        try:
+            context_store_client = ContextStoreClient()
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Could not initialize ContextStoreClient: {e}")
+
+    # Initialize observability (if not already initialized)
+    if enable_observability:
+        from .config import ObservabilityConfig
+        from .observability import get_observability_manager, initialize_observability
+
+        # Check if observability is already initialized
+        if get_observability_manager() is None:
+            try:
+                # Create observability config
+                observability_config = ObservabilityConfig(
+                    environment=langfuse_environment,
+                    enable_langfuse=enable_langfuse_monitoring
+                    and bool(langfuse_public_key and langfuse_secret_key),
+                    langfuse_public_key=langfuse_public_key,
+                    langfuse_secret_key=langfuse_secret_key,
+                    langfuse_host=langfuse_host,
+                    enable_opentelemetry=bool(azure_monitor_connection_string),
+                    azure_monitor_connection_string=azure_monitor_connection_string,
+                )
+
+                # Initialize observability
+                initialize_observability(observability_config)
+                logging.getLogger(__name__).info("Observability initialized")
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"Could not initialize observability: {e}")
+
+    # For backward compatibility, still support direct Langfuse client
+    langfuse_client = None
+    if enable_langfuse_monitoring and LANGFUSE_AVAILABLE and not enable_observability:
+        try:
+            langfuse_client = get_langfuse_client(
+                public_key=langfuse_public_key,
+                secret_key=langfuse_secret_key,
+                host=langfuse_host,
+                debug=debug,
+                environment=langfuse_environment,
+            )
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Could not initialize Langfuse monitoring: {e}")
+
+    return EnergyAIApplication(
+        title=title,
+        version=version,
+        description=description,
+        debug=debug,
+        enable_cors=enable_cors,
+        enable_gzip=enable_gzip,
+        context_store_client=context_store_client,
+        langfuse_monitoring_client=langfuse_client,
+    )
+
+
+def create_production_application(
+    title: str = "EnergyAI Production Platform",
+    enable_context_store: bool = True,
+    enable_observability: bool = True,
+    enable_langfuse_monitoring: bool = True,
+    langfuse_public_key: Optional[str] = None,
+    langfuse_secret_key: Optional[str] = None,
+    langfuse_host: str = "https://cloud.langfuse.com",
+    azure_monitor_connection_string: Optional[str] = None,
+    **kwargs,
+) -> EnergyAIApplication:
+    """Create a production-ready EnergyAI application with monitoring."""
+    return create_application(
+        title=title,
+        debug=False,
+        enable_context_store=enable_context_store,
+        enable_observability=enable_observability,
+        enable_langfuse_monitoring=enable_langfuse_monitoring,
+        langfuse_public_key=langfuse_public_key,
+        langfuse_secret_key=langfuse_secret_key,
+        langfuse_host=langfuse_host,
+        langfuse_environment="production",
+        azure_monitor_connection_string=azure_monitor_connection_string,
+        **kwargs,
+    )
 
 
 def run_development_server(

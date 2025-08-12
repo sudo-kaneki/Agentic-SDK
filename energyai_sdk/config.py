@@ -66,17 +66,33 @@ class ModelConfig:
 
 
 @dataclass
-class TelemetryConfig:
-    """Configuration for telemetry."""
+class ObservabilityConfig:
+    """Unified configuration for observability and monitoring."""
 
-    enable_azure_monitor: bool = False
-    azure_monitor_connection_string: Optional[str] = None
-    enable_langfuse: bool = False
+    # Service metadata
+    service_name: str = "energyai-sdk"
+    service_version: str = "1.0.0"
+    environment: str = "production"
+
+    # Langfuse LLM Observability
+    enable_langfuse: bool = True
     langfuse_public_key: Optional[str] = None
     langfuse_secret_key: Optional[str] = None
     langfuse_host: str = "https://cloud.langfuse.com"
-    langfuse_environment: str = "production"
-    sample_rate: float = 1.0
+
+    # OpenTelemetry APM
+    enable_opentelemetry: bool = False
+    otlp_endpoint: Optional[str] = None  # For custom collectors
+    azure_monitor_connection_string: Optional[str] = None
+
+    # Sampling and export settings
+    trace_sample_rate: float = 1.0
+    metrics_export_interval: int = 5000  # 5 seconds
+
+    # Feature flags
+    enable_traces: bool = True
+    enable_metrics: bool = True
+    enable_logging: bool = True
 
 
 @dataclass
@@ -142,6 +158,7 @@ if PYDANTIC_AVAILABLE:
         azure_monitor_connection_string: Optional[str] = Field(
             None, env="AZURE_MONITOR_CONNECTION_STRING"
         )
+        otlp_endpoint: Optional[str] = Field(None, env="OTLP_ENDPOINT")
         langfuse_public_key: Optional[str] = Field(None, env="LANGFUSE_PUBLIC_KEY")
         langfuse_secret_key: Optional[str] = Field(None, env="LANGFUSE_SECRET_KEY")
         langfuse_host: str = Field("https://cloud.langfuse.com", env="LANGFUSE_HOST")
@@ -216,16 +233,19 @@ if PYDANTIC_AVAILABLE:
 
             return configs
 
-        def get_telemetry_config(self) -> TelemetryConfig:
-            """Get telemetry configuration."""
-            return TelemetryConfig(
-                enable_azure_monitor=bool(self.azure_monitor_connection_string),
-                azure_monitor_connection_string=self.azure_monitor_connection_string,
+        def get_observability_config(self) -> ObservabilityConfig:
+            """Get observability configuration."""
+            return ObservabilityConfig(
+                environment=self.langfuse_environment,
                 enable_langfuse=bool(self.langfuse_public_key and self.langfuse_secret_key),
                 langfuse_public_key=self.langfuse_public_key,
                 langfuse_secret_key=self.langfuse_secret_key,
                 langfuse_host=self.langfuse_host,
-                langfuse_environment=self.langfuse_environment,
+                enable_opentelemetry=bool(
+                    self.azure_monitor_connection_string or self.otlp_endpoint
+                ),
+                azure_monitor_connection_string=self.azure_monitor_connection_string,
+                otlp_endpoint=self.otlp_endpoint,
             )
 
         def get_security_config(self) -> SecurityConfig:
@@ -716,12 +736,12 @@ def create_energy_platform(config_path: Optional[str] = None) -> "EnergyAIApplic
         config = config_manager.get_settings()
 
     # Initialize SDK with telemetry
-    if PYDANTIC_AVAILABLE and hasattr(config, "get_telemetry_config"):
-        telemetry_config = config.get_telemetry_config()
+    if PYDANTIC_AVAILABLE and hasattr(config, "get_observability_config"):
+        observability_config = config.get_observability_config()
         initialize_sdk(
-            azure_monitor_connection_string=telemetry_config.azure_monitor_connection_string,
-            langfuse_public_key=telemetry_config.langfuse_public_key,
-            langfuse_secret_key=telemetry_config.langfuse_secret_key,
+            azure_monitor_connection_string=observability_config.azure_monitor_connection_string,
+            langfuse_public_key=observability_config.langfuse_public_key,
+            langfuse_secret_key=observability_config.langfuse_secret_key,
             log_level=config.log_level.value if hasattr(config, "log_level") else "INFO",
         )
     else:
