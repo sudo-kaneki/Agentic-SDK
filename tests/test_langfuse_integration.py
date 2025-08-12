@@ -1,44 +1,48 @@
 """
-Tests for Langfuse Monitoring Integration.
+DEPRECATED: Legacy Langfuse Integration Tests.
 
-Tests the integration between EnergyAIApplication and LangfuseMonitoringClient
-for comprehensive observability.
+This file contains legacy tests for the old LangfuseMonitoringClient approach.
+These tests are kept for backward compatibility but may be removed in future versions.
+
+For new tests, use test_unified_monitoring_integration.py which tests the new
+unified MonitoringClient that handles both Langfuse and OpenTelemetry.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from energyai_sdk.application import (
-    ChatRequest,
-    EnergyAIApplication,
-    create_application,
-)
+from energyai_sdk.application import ChatRequest, EnergyAIApplication, create_application
 from energyai_sdk.core import AgentResponse
 
 
-class TestLangfuseIntegration:
-    """Test cases for Langfuse monitoring integration."""
+class TestUnifiedMonitoringIntegration:
+    """Test cases for unified monitoring integration (Langfuse + OpenTelemetry)."""
 
     @pytest.fixture
-    def mock_langfuse_client(self):
-        """Mock LangfuseMonitoringClient for testing."""
+    def mock_monitoring_client(self):
+        """Mock MonitoringClient for testing."""
         client = MagicMock()
-        client.is_enabled.return_value = True
+
+        # Mock health check
+        client.health_check.return_value = {
+            "langfuse": True,
+            "opentelemetry": True,
+            "overall": True,
+        }
 
         # Mock trace object
         trace = MagicMock()
-        trace.generation.return_value = MagicMock()
-        trace.span.return_value = MagicMock()
         client.create_trace.return_value = trace
 
         # Mock generation object
         generation = MagicMock()
         client.create_generation.return_value = generation
 
-        # Mock span object
+        # Mock span context manager
         span = MagicMock()
-        client.create_span.return_value = span
+        client.start_span.return_value.__enter__ = MagicMock(return_value=span)
+        client.start_span.return_value.__exit__ = MagicMock(return_value=None)
 
         return client
 

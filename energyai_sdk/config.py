@@ -65,9 +65,11 @@ class ModelConfig:
         }
 
 
+# ObservabilityConfig is deprecated - use MonitoringConfig from clients.monitoring
+# This is kept for backward compatibility
 @dataclass
 class ObservabilityConfig:
-    """Unified configuration for observability and monitoring."""
+    """Deprecated: Use MonitoringConfig from clients.monitoring instead."""
 
     # Service metadata
     service_name: str = "energyai-sdk"
@@ -234,7 +236,7 @@ if PYDANTIC_AVAILABLE:
             return configs
 
         def get_observability_config(self) -> ObservabilityConfig:
-            """Get observability configuration."""
+            """Get observability configuration. Deprecated: use get_monitoring_config instead."""
             return ObservabilityConfig(
                 environment=self.langfuse_environment,
                 enable_langfuse=bool(self.langfuse_public_key and self.langfuse_secret_key),
@@ -247,6 +249,28 @@ if PYDANTIC_AVAILABLE:
                 azure_monitor_connection_string=self.azure_monitor_connection_string,
                 otlp_endpoint=self.otlp_endpoint,
             )
+
+        def get_monitoring_config(self):
+            """Get monitoring configuration using the new unified client."""
+            try:
+                from .clients.monitoring import MonitoringConfig
+
+                return MonitoringConfig(
+                    environment=self.langfuse_environment,
+                    enable_langfuse=bool(self.langfuse_public_key and self.langfuse_secret_key),
+                    langfuse_public_key=self.langfuse_public_key,
+                    langfuse_secret_key=self.langfuse_secret_key,
+                    langfuse_host=self.langfuse_host,
+                    enable_opentelemetry=bool(
+                        self.azure_monitor_connection_string or self.otlp_endpoint
+                    ),
+                    azure_monitor_connection_string=self.azure_monitor_connection_string,
+                    otlp_trace_endpoint=self.otlp_endpoint,
+                    otlp_metrics_endpoint=self.otlp_endpoint,
+                )
+            except ImportError:
+                # Fallback to ObservabilityConfig for backward compatibility
+                return self.get_observability_config()
 
         def get_security_config(self) -> SecurityConfig:
             """Get security configuration."""

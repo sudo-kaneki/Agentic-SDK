@@ -2,7 +2,7 @@
 
 **A Powerful SDK Wrapper for Semantic Kernel with Azure Cloud Integration**
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.8+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Semantic Kernel](https://img.shields.io/badge/semantic--kernel-1.0+-green.svg)](https://github.com/microsoft/semantic-kernel)
 [![Azure Integration](https://img.shields.io/badge/azure-cosmos%20%7C%20monitor-blue.svg)](https://azure.microsoft.com/)
 
@@ -161,26 +161,46 @@ session = await context_store.create_session(
 # Conversation context persists across server restarts
 ```
 
-### 📊 **Integrated Observability (OpenTelemetry + Azure Monitor)**
-Enterprise-grade monitoring and tracing:
+### 📊 **Unified Monitoring & Observability**
+**Enterprise-grade monitoring with dual LLM + System insights:**
+
+The EnergyAI SDK provides unified monitoring through a single `MonitoringClient` that integrates:
+- **🤖 Langfuse**: LLM-specific observability (conversation traces, generation costs, model performance)
+- **📈 OpenTelemetry**: System monitoring (performance metrics, distributed tracing, error tracking)
+- **☁️ Azure Monitor**: Cloud-native monitoring and alerting
 
 ```python
-from energyai_sdk.clients import MonitoringClient, MonitoringConfig
+from energyai_sdk.clients.monitoring import MonitoringClient, MonitoringConfig
 
-# Configure monitoring
+# Configure unified monitoring
 config = MonitoringConfig(
     service_name="energyai-production",
     environment="production",
+    # LLM observability with Langfuse
+    enable_langfuse=True,
+    langfuse_public_key="pk_your_key",
+    langfuse_secret_key="sk_your_secret",
+    # System monitoring with OpenTelemetry + Azure
+    enable_opentelemetry=True,
     azure_monitor_connection_string="InstrumentationKey=your_key"
 )
 
 monitoring_client = MonitoringClient(config)
 
-# Automatic tracing and metrics
+# Dual monitoring - both LLM and system metrics collected
 with monitoring_client.start_span("energy_analysis") as span:
-    # Agent operations are automatically traced
-    # Metrics collected: execution time, success rate, error types
+    # LLM calls automatically traced in Langfuse
+    trace = monitoring_client.create_trace("user_session", user_id="user123")
+    generation = monitoring_client.create_generation(trace, "energy_advice")
+    # System performance tracked in OpenTelemetry/Azure Monitor
+    monitoring_client.record_metric("analysis_requests", 1.0)
 ```
+
+**🎯 What gets monitored automatically:**
+- **LLM Conversations**: User sessions, agent responses, token usage, costs
+- **System Performance**: Response times, error rates, resource usage
+- **Business Metrics**: Tool usage, user engagement, success rates
+- **Error Tracking**: Exception details, failure patterns, debugging info
 
 ### 🔄 **Dynamic Tool Loading**
 Load tools from registry into Semantic Kernel at runtime:
