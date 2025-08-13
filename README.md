@@ -4,7 +4,7 @@
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Semantic Kernel](https://img.shields.io/badge/semantic--kernel-1.0+-green.svg)](https://github.com/microsoft/semantic-kernel)
-[![Azure Integration](https://img.shields.io/badge/azure-cosmos%20%7C%20monitor-blue.svg)](https://azure.microsoft.com/)
+[![Azure Integration](https://img.shields.io/badge/azure-cosmos%20%7C%20monitor-orange.svg)](https://azure.microsoft.com/)
 
 ## 🎯 Mission
 
